@@ -201,7 +201,7 @@ sample in [`settings.yaml`](settings.yaml). Key parameters:
 
 | Parameter | Description |
 |---|---|
-| `agent.id` | unique agent ID |
+| `agent.id` | optional display label; if empty, a random id (`agent-xxxx`) is generated at install and persisted in the identity file |
 | `agent.health_listen` | HTTP `/healthz` address (empty disables it) |
 | `agent.ui_listen` | localhost GUI API address (mode, e2e approval) |
 | `crypto.key_file` | local key material file (hex or raw 16/24/32 bytes) |

@@ -127,7 +127,9 @@ type LogConfig struct {
 func Default() *Config {
 	return &Config{
 		Agent: AgentConfig{
-			ID:           "clavis-001",
+			// ID is generated randomly at install time and persisted in
+			// the identity state; the config value is only an optional
+			// display label.
 			HealthListen: "127.0.0.1:8901",
 			UIListen:     "127.0.0.1:8902",
 		},
@@ -197,9 +199,8 @@ func parse(data []byte, cfg *Config) error {
 
 // Validate checks the required configuration parameters.
 func (c *Config) Validate() error {
-	if c.Agent.ID == "" {
-		return errors.New("agent.id must not be empty")
-	}
+	// agent.id is optional: a random id is generated and persisted at
+	// install time by the agent.
 	switch c.Crypto.Algorithm {
 	case "", "aes-256-ctr":
 	default:

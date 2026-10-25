@@ -63,12 +63,13 @@ func Run(ctx context.Context, cfgPath string) error {
 	}
 
 	var (
-		identity    *crypto.AgentIdentity
-		serverPub   []byte
-		serverNonce []byte
-		readerKeys  fuse.ReaderKeyProvider
-		relays      []string
-		multi       *keyclient.MultiClient
+		identity         *crypto.AgentIdentity
+		serverPub        []byte
+		serverNonce      []byte
+		readerKeys       fuse.ReaderKeyProvider
+		relays           []string
+		multi            *keyclient.MultiClient
+		effectiveAgentID string
 	)
 	var keyGetter crypto.KeyGetter = crypto.NewFileKeyGetter(cfg.Crypto.KeyFile)
 	if cfg.Server.URL != "" {
@@ -80,6 +81,27 @@ func Run(ctx context.Context, cfgPath string) error {
 		if err != nil {
 			return fmt.Errorf("key server tls: %w", err)
 		}
+		// v2: the persistent identity is loaded (or generated on first
+		// install) before any request is made, because the effective agent
+		// id (config label or the random local id) is sent in the
+		// X-Agent-ID header on every request.
+		if cfg.Crypto.IdentityFile == "" {
+			return errors.New("crypto.identity_file is required with a key server")
+		}
+		state, err := agentid.LoadOrCreate(cfg.Crypto.IdentityFile)
+		if err != nil {
+			return fmt.Errorf("agent identity: %w", err)
+		}
+		if cfg.Agent.ID != "" {
+			effectiveAgentID = cfg.Agent.ID
+		} else {
+			effectiveAgentID = state.LocalID
+		}
+		identity, err = state.Identity()
+		if err != nil {
+			return fmt.Errorf("agent identity: %w", err)
+		}
+
 		// Multiple servers may be configured (comma separated): the agent
 		// registers a reader key (AS) per server and fails over to the
 		// next healthy one.
@@ -92,27 +114,14 @@ func Run(ctx context.Context, cfgPath string) error {
 		clients := make([]*keyclient.Client, 0, len(urls))
 		for _, u := range urls {
 			client := keyclient.NewClient(u, tlsCfg, clientTimeout)
-			client.SetAgentID(cfg.Agent.ID)
+			client.SetAgentID(effectiveAgentID)
 			clients = append(clients, client)
 		}
 		multi = keyclient.NewMultiClient(clients)
 		keyGetter = keyclient.NewGetter(multi, keyclient.NewCache())
 
-		// v2: persistent agent identity + registration + reader keys
-		// on every configured server.
-		if cfg.Crypto.IdentityFile == "" {
-			return errors.New("crypto.identity_file is required with a key server")
-		}
-		state, err := agentid.LoadOrCreate(cfg.Crypto.IdentityFile)
-		if err != nil {
-			return fmt.Errorf("agent identity: %w", err)
-		}
 		if err := agentid.EnsureRegistered(ctx, multi, urls, state, cfg.Crypto.IdentityFile); err != nil {
 			return fmt.Errorf("agent registration: %w", err)
-		}
-		identity, err = state.Identity()
-		if err != nil {
-			return fmt.Errorf("agent identity: %w", err)
 		}
 		if serverPub, err = state.ServerPub(); err != nil {
 			return err
@@ -123,7 +132,7 @@ func Run(ctx context.Context, cfgPath string) error {
 		readerKeys = routerReaderKeys{
 			multi:   multi,
 			relays:  relays,
-			agentID: cfg.Agent.ID,
+			agentID: effectiveAgentID,
 		}
 
 		// Offline cache: remember fetched reader keys in SQLite (wrapped
@@ -141,7 +150,7 @@ func Run(ctx context.Context, cfgPath string) error {
 				logger.Info("offline cache enabled", "path", cfg.Crypto.LocalCacheDB)
 			}
 		}
-		logger.Info("using key servers", "urls", urls, "count", len(urls))
+		logger.Info("using key servers", "urls", urls, "count", len(urls), "agent_id", effectiveAgentID)
 	} else if cfg.Token.ModulePath != "" {
 		backend, err := token.Open(token.Config{
 			ModulePath:      cfg.Token.ModulePath,
@@ -165,7 +174,7 @@ func Run(ctx context.Context, cfgPath string) error {
 	modeProvider := func() crypto.Mode { return modeMgr.Get() }
 
 	if cfg.Agent.UIListen != "" && identity != nil && multi != nil {
-		ui := NewUIServer(cfg.Agent.UIListen, modeMgr, multi, relays, identity, cfg.Agent.ID, logger)
+		ui := NewUIServer(cfg.Agent.UIListen, modeMgr, multi, relays, identity, effectiveAgentID, logger)
 		if err := ui.Start(); err != nil {
 			logger.Warn("ui server disabled", "error", err)
 		} else {

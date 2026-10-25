@@ -8,11 +8,13 @@ package agentid
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/clavis/clavis/internal/crypto"
 	"github.com/clavis/clavis/internal/keyclient"
@@ -29,6 +31,10 @@ type ServerState struct {
 
 // State is the persisted agent v2 state.
 type State struct {
+	// LocalID is the agent's random unique identifier generated once at
+	// installation time. It is used as the display/audit agent identity.
+	LocalID string `json:"local_id,omitempty"`
+
 	// MasterKeyHex and SigPrivHex are the local identity (never exposed).
 	MasterKeyHex string `json:"master_key"`
 	SigPrivHex   string `json:"sig_private_key"`
@@ -101,6 +107,13 @@ func LoadOrCreate(path string) (*State, error) {
 				ServerNonce: s.ServerNonce,
 			}}
 		}
+		// Missing local id (pre-random-id installs): generate and persist.
+		if s.LocalID == "" {
+			s.LocalID = newLocalID()
+			if err := s.Save(path); err != nil {
+				return nil, err
+			}
+		}
 		return &s, nil
 	}
 	if !os.IsNotExist(err) {
@@ -112,6 +125,7 @@ func LoadOrCreate(path string) (*State, error) {
 		return nil, err
 	}
 	s := &State{
+		LocalID:      newLocalID(),
 		MasterKeyHex: hex.EncodeToString(identity.MasterKey),
 		SigPrivHex:   hex.EncodeToString(identity.SigPriv),
 	}
@@ -119,6 +133,15 @@ func LoadOrCreate(path string) (*State, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// newLocalID returns a random agent identifier.
+func newLocalID() string {
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("agent-%d", time.Now().UnixNano())
+	}
+	return "agent-" + hex.EncodeToString(buf)
 }
 
 // Save persists the state atomically.

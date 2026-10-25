@@ -10,8 +10,10 @@ import (
 // TestDefault verifies the default configuration values.
 func TestDefault(t *testing.T) {
 	cfg := Default()
-	if cfg.Agent.ID != "clavis-001" {
-		t.Errorf("Default().Agent.ID = %q, want %q", cfg.Agent.ID, "clavis-001")
+	// agent.id is optional: a random id is generated and persisted at
+	// install time by the agent.
+	if cfg.Agent.ID != "" {
+		t.Errorf("Default().Agent.ID = %q, want empty (generated at install)", cfg.Agent.ID)
 	}
 	if cfg.Fuse.Directory == "" || cfg.Fuse.MountPoint == "" {
 		t.Error("Default Fuse directory/mount_point must not be empty")
@@ -102,7 +104,7 @@ func TestValidateError(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid", func(*Config) {}, false},
-		{"empty agent id", func(c *Config) { c.Agent.ID = "" }, true},
+		{"empty agent id", func(c *Config) { c.Agent.ID = "" }, false},
 		{"empty directory", func(c *Config) { c.Fuse.Directory = "" }, true},
 		{"empty mount point", func(c *Config) { c.Fuse.MountPoint = "" }, true},
 		{"dir missing", func(c *Config) { c.Fuse.Directory = filepath.Join(existing, "missing") }, true},

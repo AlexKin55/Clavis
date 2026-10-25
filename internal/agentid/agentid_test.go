@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
+	"fmt"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/clavis/clavis/internal/crypto"
 	"github.com/clavis/clavis/internal/keyclient"
 	"github.com/clavis/clavis/internal/keyserver"
 )
@@ -31,7 +36,7 @@ func testServer(t *testing.T) *httptest.Server {
 }
 
 // TestLoadOrCreatePersistent verifies that the identity state survives
-// reload and reconstructs the same keys.
+// reload and reconstructs the same keys and local id.
 func TestLoadOrCreatePersistent(t *testing.T) {
 	path := t.TempDir() + "/identity.json"
 
@@ -45,6 +50,12 @@ func TestLoadOrCreatePersistent(t *testing.T) {
 	}
 	if first.MasterKeyHex != second.MasterKeyHex {
 		t.Error("master key changed between reloads")
+	}
+	if first.LocalID == "" {
+		t.Error("local id was not generated")
+	}
+	if first.LocalID != second.LocalID {
+		t.Errorf("local id changed between reloads: %q != %q", first.LocalID, second.LocalID)
 	}
 
 	id1, err := first.Identity()
@@ -60,6 +71,45 @@ func TestLoadOrCreatePersistent(t *testing.T) {
 	}
 	if !bytes.Equal(id1.PublicSignatureKey(), id2.PublicSignatureKey()) {
 		t.Error("restored public key mismatch")
+	}
+}
+
+// TestLoadOrCreateMigration verifies that a pre-random-id state file
+// (no local_id field) receives and persists a generated local id on load.
+func TestLoadOrCreateMigration(t *testing.T) {
+	identity, err := crypto.NewAgentIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/identity.json"
+	legacy := fmt.Sprintf(`{"master_key": %q, "sig_private_key": %q}`,
+		hexEncode(identity.MasterKey), hexEncode(identity.SigPriv))
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := LoadOrCreate(path)
+	if err != nil {
+		t.Fatalf("LoadOrCreate() error: %v", err)
+	}
+	if state.LocalID == "" || !strings.HasPrefix(state.LocalID, "agent-") {
+		t.Errorf("LocalID = %q, want an agent- prefixed id", state.LocalID)
+	}
+	if state.MasterKeyHex != hexEncode(identity.MasterKey) {
+		t.Error("master key changed during migration")
+	}
+
+	// The migrated id must be persisted for the next start.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloaded State
+	if err := json.Unmarshal(data, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.LocalID != state.LocalID {
+		t.Error("migrated local id was not persisted")
 	}
 }
 

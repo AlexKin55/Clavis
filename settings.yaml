@@ -4,7 +4,10 @@
 # but can be overridden for a particular workstation.
 
 agent:
-  id: "clavis-001"
+  # Optional display label. Leave it empty: a random id ("agent-xxxxxxxx")
+  # is generated once at installation time and persisted in
+  # crypto.identity_file.
+  id: ""
   # Address of the HTTP /healthz endpoint; empty disables the server.
   health_listen: "127.0.0.1:8901"
   # Localhost address of the desktop GUI API; empty disables it.
