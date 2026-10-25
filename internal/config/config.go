@@ -18,6 +18,7 @@ type Config struct {
 	Crypto CryptoConfig `yaml:"crypto"`
 	Fuse   FuseConfig   `yaml:"fuse"`
 	Log    LogConfig    `yaml:"log"`
+	Policy PolicyConfig `yaml:"policy"`
 }
 
 // AgentConfig holds agent identity and service parameters.
@@ -47,6 +48,17 @@ type FuseConfig struct {
 	MountPoint string `yaml:"mount_point"`
 	// Options are FUSE arguments (e.g. -f -d -o auto_unmount,allow_other).
 	Options []string `yaml:"options"`
+}
+
+// PolicyConfig holds the access-control policy knobs (see internal/interceptor).
+type PolicyConfig struct {
+	// AllowUID0 grants access to processes running as root.
+	AllowUID0 bool `yaml:"allow_uid0"`
+	// AllowFirejail grants access to processes inside a Firejail sandbox.
+	AllowFirejail bool `yaml:"allow_firejail"`
+	// Whitelist lists executable names (/proc/<pid>/comm) allowed to open
+	// protected documents directly.
+	Whitelist []string `yaml:"whitelist"`
 }
 
 // LogConfig holds logging parameters.
@@ -86,6 +98,10 @@ func Default() *Config {
 			Size:  "5MB",
 			Count: 3,
 			Level: "debug",
+		},
+		Policy: PolicyConfig{
+			AllowUID0:     false,
+			AllowFirejail: true,
 		},
 	}
 }

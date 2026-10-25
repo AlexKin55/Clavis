@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/clavis/clavis/internal/crypto"
+	"github.com/clavis/clavis/internal/interceptor"
+	"github.com/clavis/clavis/internal/subject"
 	"github.com/hanwen/go-fuse/v2/fuse"
 )
 
@@ -250,6 +252,74 @@ func TestVisibleSize(t *testing.T) {
 	}
 	if got := visibleSize(&st); got != uint64(len(payload)) {
 		t.Errorf("visibleSize() = %d, want %d", got, len(payload))
+	}
+}
+
+// TestOpenAccessDenied verifies that a non-sanctioned process cannot open
+// a protected document.
+func TestOpenAccessDenied(t *testing.T) {
+	root, sourceDir := newTestRoot(t)
+	path := filepath.Join(sourceDir, "guarded.txt")
+
+	f, err := root.createProtectedFile(path, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Release(context.Background())
+
+	policyRoot := NewSecureRoot(&Config{
+		SourceDir:   sourceDir,
+		KeyGetter:   root.cfg.KeyGetter,
+		Interceptor: interceptor.NewPolicy(interceptor.Config{}, nil),
+	})
+	node := &secureNode{root: policyRoot, sourcePath: path}
+
+	// An unknown (and probably non-existent) process.
+	ctx := &fuse.Context{Caller: fuse.Caller{Pid: 99999999}}
+	fh, _, errno := node.Open(ctx, 0)
+	if errno != syscall.EACCES {
+		t.Fatalf("Open() errno = %v, want EACCES", errno)
+	}
+	if fh != nil {
+		t.Fatal("Open() returned a handle despite denial")
+	}
+}
+
+// TestOpenAccessGranted verifies that a whitelisted process may open the
+// document. The real test process is used so the /proc lookup succeeds.
+func TestOpenAccessGranted(t *testing.T) {
+	root, sourceDir := newTestRoot(t)
+	path := filepath.Join(sourceDir, "guarded.txt")
+
+	f, err := root.createProtectedFile(path, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Release(context.Background())
+
+	own, err := subject.FromPID(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyRoot := NewSecureRoot(&Config{
+		SourceDir: sourceDir,
+		KeyGetter: root.cfg.KeyGetter,
+		Interceptor: interceptor.NewPolicy(interceptor.Config{
+			Whitelist: []string{own.Comm},
+		}, nil),
+	})
+	node := &secureNode{root: policyRoot, sourcePath: path}
+
+	ctx := &fuse.Context{Caller: fuse.Caller{Pid: uint32(os.Getpid())}}
+	fh, _, errno := node.Open(ctx, 0)
+	if errno != 0 {
+		t.Fatalf("Open() errno = %v, want success", errno)
+	}
+	if fh == nil {
+		t.Fatal("Open() returned no handle")
+	}
+	if sf, ok := fh.(*secureFile); ok {
+		_ = sf.Release(context.Background())
 	}
 }
 

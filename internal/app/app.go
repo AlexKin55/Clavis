@@ -17,6 +17,7 @@ import (
 	"github.com/clavis/clavis/internal/config"
 	"github.com/clavis/clavis/internal/crypto"
 	"github.com/clavis/clavis/internal/fuse"
+	"github.com/clavis/clavis/internal/interceptor"
 	"github.com/clavis/clavis/internal/logging"
 	"github.com/clavis/clavis/internal/version"
 )
@@ -53,12 +54,19 @@ func Run(ctx context.Context, cfgPath string) error {
 	}
 
 	keyGetter := crypto.NewFileKeyGetter(cfg.Crypto.KeyFile)
+	policy := interceptor.NewPolicy(interceptor.Config{
+		AllowUID0:     cfg.Policy.AllowUID0,
+		AllowFirejail: cfg.Policy.AllowFirejail,
+		Whitelist:     cfg.Policy.Whitelist,
+	}, logger.Logger)
+
 	server, err := fuse.Mount(fuse.MountConfig{
-		SourceDir:  cfg.Fuse.Directory,
-		MountPoint: cfg.Fuse.MountPoint,
-		Options:    cfg.Fuse.Options,
-		KeyGetter:  keyGetter,
-		Logger:     logger.Logger,
+		SourceDir:   cfg.Fuse.Directory,
+		MountPoint:  cfg.Fuse.MountPoint,
+		Options:     cfg.Fuse.Options,
+		KeyGetter:   keyGetter,
+		Interceptor: policy,
+		Logger:      logger.Logger,
 	})
 	if err != nil {
 		return err

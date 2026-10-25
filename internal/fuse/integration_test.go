@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/clavis/clavis/internal/crypto"
+	"github.com/clavis/clavis/internal/interceptor"
 )
 
 // fuseAvailable reports whether a real FUSE mount is possible.
@@ -40,10 +41,18 @@ func TestIntegrationMount(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The test process is granted access via a whitelist entry so the
+	// e2e run exercises the real permission path.
+	ownName := filepath.Base(os.Args[0])
+	policy := interceptor.NewPolicy(interceptor.Config{
+		Whitelist: []string{ownName},
+	}, nil)
+
 	server, err := Mount(MountConfig{
-		SourceDir:  source,
-		MountPoint: mount,
-		KeyGetter:  crypto.NewFileKeyGetter(keyPath),
+		SourceDir:   source,
+		MountPoint:  mount,
+		KeyGetter:   crypto.NewFileKeyGetter(keyPath),
+		Interceptor: policy,
 	})
 	if err != nil {
 		t.Skipf("cannot mount FUSE (skipped): %v", err)

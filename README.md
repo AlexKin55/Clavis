@@ -19,7 +19,9 @@ clavis/
 │   ├── config/             # settings.yaml loading + validation
 │   ├── crypto/             # file header (UUID/nonce), AES-CTR, key getters
 │   ├── fuse/               # FUSE mirror with on-the-fly encryption
+│   ├── interceptor/        # access policy: firejail/root/whitelist + audit
 │   ├── logging/            # slog + rotation (lumberjack)
+│   ├── subject/            # calling process identity from /proc
 │   └── version/            # build version (ldflags)
 ├── scripts/                # helper scripts
 ├── tests/                  # e2e tests (to be added)
@@ -66,6 +68,9 @@ sample in [`settings.yaml`](settings.yaml). Key parameters:
 | `agent.health_listen` | HTTP `/healthz` address (empty disables it) |
 | `crypto.key_file` | key material file (hex or raw 16/24/32 bytes) |
 | `crypto.algorithm` | default algorithm for new documents |
+| `policy.allow_uid0` | allow root without further checks |
+| `policy.allow_firejail` | allow Firejail-sandboxed processes |
+| `policy.whitelist` | sanctioned executable names (e.g. `["libreoffice"]`) |
 | `fuse.directory` | directory of the encrypted files (must exist) |
 | `fuse.mount_point` | mount point (created automatically) |
 | `fuse.options` | FUSE arguments |

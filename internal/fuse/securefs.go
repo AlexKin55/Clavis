@@ -12,6 +12,8 @@ import (
 	"github.com/hanwen/go-fuse/v2/fuse"
 
 	"github.com/clavis/clavis/internal/crypto"
+	"github.com/clavis/clavis/internal/interceptor"
+	"github.com/clavis/clavis/internal/subject"
 )
 
 // attrTimeout is the TTL for attributes and directory entries.
@@ -23,6 +25,9 @@ type Config struct {
 	SourceDir string
 	// KeyGetter provides the key material for documents.
 	KeyGetter crypto.KeyGetter
+	// Interceptor, if set, decides whether the calling process may open
+	// a document. A nil interceptor disables access control (tests/demo).
+	Interceptor interceptor.Interceptor
 	// Logger is used for debugging output; may be nil.
 	Logger *slog.Logger
 }
@@ -87,7 +92,24 @@ func (n *secureNode) Getattr(_ context.Context, _ fs.FileHandle, out *fuse.AttrO
 }
 
 // Open opens an existing protected file and returns a direct-IO handle.
-func (n *secureNode) Open(_ context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+// The calling process is identified, described and checked against the
+// interceptor policy before the file is opened.
+func (n *secureNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
+	if n.root.cfg.Interceptor != nil {
+		s := subjectInfoFromContext(ctx)
+		s.FileName = n.sourcePath
+
+		mask := interceptor.ReadMask
+		if flags&syscall.O_ACCMODE != syscall.O_RDONLY {
+			mask |= interceptor.WriteMask
+		}
+		if !n.root.cfg.Interceptor.Permit(mask, s) {
+			n.root.cfg.Interceptor.LogAccess(s, false)
+			return nil, 0, syscall.EACCES
+		}
+		n.root.cfg.Interceptor.LogAccess(s, true)
+	}
+
 	file, err := n.root.openProtectedFile(n.sourcePath, normalizeFlags(flags))
 	if err != nil {
 		n.root.cfg.Logger.Debug("open failed", "path", n.sourcePath, "error", err)
@@ -96,9 +118,42 @@ func (n *secureNode) Open(_ context.Context, flags uint32) (fs.FileHandle, uint3
 	return file, fuse.FOPEN_DIRECT_IO, 0
 }
 
+// subjectInfoFromContext describes the process originated by the FUSE
+// request. The PID comes from the kernel-provided caller; the executable
+// name and credentials are enriched from /proc when the process is alive.
+func subjectInfoFromContext(ctx context.Context) subject.Info {
+	pid := 0
+	var uid, gid uint32
+	if fc, ok := ctx.(*fuse.Context); ok {
+		pid = int(fc.Pid)
+		uid, gid = fc.Uid, fc.Gid
+	}
+
+	s, err := subject.FromPID(pid)
+	if err != nil {
+		// The process may have exited; kernel credentials are still usable.
+		return subject.Info{PID: pid, UID: uid, GID: gid}
+	}
+	s.UID, s.GID = uid, gid
+	return s
+}
+
 // Create creates a new protected file with a fresh UUID and header.
+// The calling process is checked against the interceptor before the file
+// is created, so unauthorized applications cannot leave orphaned files.
 func (n *secureNode) Create(ctx context.Context, name string, _ uint32, mode uint32, out *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
 	path := filepath.Join(n.sourcePath, name)
+
+	if n.root.cfg.Interceptor != nil {
+		s := subjectInfoFromContext(ctx)
+		s.FileName = path
+		if !n.root.cfg.Interceptor.Permit(interceptor.WriteMask, s) {
+			n.root.cfg.Interceptor.LogAccess(s, false)
+			return nil, nil, 0, syscall.EACCES
+		}
+		n.root.cfg.Interceptor.LogAccess(s, true)
+	}
+
 	file, err := n.root.createProtectedFile(path, mode&0o7777)
 	if err != nil {
 		n.root.cfg.Logger.Debug("create failed", "path", path, "error", err)

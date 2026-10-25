@@ -9,6 +9,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fuse"
 
 	"github.com/clavis/clavis/internal/crypto"
+	"github.com/clavis/clavis/internal/interceptor"
 )
 
 // MountConfig holds the parameters required to mount the secure filesystem.
@@ -21,6 +22,9 @@ type MountConfig struct {
 	Options []string
 	// KeyGetter provides key material for documents.
 	KeyGetter crypto.KeyGetter
+	// Interceptor decides whether a process may open a document.
+	// Nil disables access control (tests/demo).
+	Interceptor interceptor.Interceptor
 	// Logger is used for debugging output; may be nil.
 	Logger *slog.Logger
 }
@@ -37,9 +41,10 @@ func Mount(cfg MountConfig) (*fuse.Server, error) {
 	mountOpts.DisableXAttrs = true
 
 	root := NewSecureRoot(&Config{
-		SourceDir: cfg.SourceDir,
-		KeyGetter: cfg.KeyGetter,
-		Logger:    cfg.Logger,
+		SourceDir:   cfg.SourceDir,
+		KeyGetter:   cfg.KeyGetter,
+		Interceptor: cfg.Interceptor,
+		Logger:      cfg.Logger,
 	})
 
 	server, err := fs.Mount(cfg.MountPoint, root.rootNode(), &fs.Options{MountOptions: mountOpts})

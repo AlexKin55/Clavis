@@ -14,6 +14,14 @@ crypto:
   # Default algorithm for new documents.
   algorithm: "aes-256-ctr"
 
+policy:
+  # Allow access for processes running as root.
+  allow_uid0: false
+  # Allow access for processes inside a Firejail sandbox.
+  allow_firejail: true
+  # Executable names (/proc/<pid>/comm) allowed to open protected documents.
+  whitelist: []
+
 fuse:
   # Directory where the encrypted files physically reside (must exist).
   directory: "/opt/clavis/data"
