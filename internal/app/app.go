@@ -13,10 +13,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/clavis/clavis/internal/agentid"
+	"github.com/clavis/clavis/internal/cache"
 	"github.com/clavis/clavis/internal/config"
 	"github.com/clavis/clavis/internal/crypto"
 	"github.com/clavis/clavis/internal/e2e"
@@ -120,6 +122,22 @@ func Run(ctx context.Context, cfgPath string) error {
 			relays:  relays,
 			agentID: cfg.Agent.ID,
 		}
+
+		// Offline cache: remember fetched reader keys in SQLite (wrapped
+		// under the local master key A) so documents open without network.
+		if cfg.Crypto.LocalCacheDB != "" {
+			if err := os.MkdirAll(filepath.Dir(cfg.Crypto.LocalCacheDB), 0o700); err != nil {
+				logger.Warn("local cache dir", "error", err)
+			}
+			disk, err := cache.Open(cfg.Crypto.LocalCacheDB, identity.MasterKey)
+			if err != nil {
+				logger.Warn("offline cache disabled", "path", cfg.Crypto.LocalCacheDB, "error", err)
+			} else {
+				defer func() { _ = disk.Close() }()
+				readerKeys = &cachedReaderKeys{inner: readerKeys, store: disk}
+				logger.Info("offline cache enabled", "path", cfg.Crypto.LocalCacheDB)
+			}
+		}
 		logger.Info("using key servers", "urls", urls, "count", len(urls))
 	} else if cfg.Token.ModulePath != "" {
 		backend, err := token.Open(token.Config{
@@ -222,6 +240,27 @@ func relayFor(relays []string, index int) string {
 		return relays[0]
 	}
 	return ""
+}
+
+// cachedReaderKeys serves a previously fetched reader key from the local
+// SQLite cache first (offline), otherwise delegates to the inner provider
+// and stores the successful result.
+type cachedReaderKeys struct {
+	inner fuse.ReaderKeyProvider
+	store *cache.Store
+}
+
+// ReaderKey implements fuse.ReaderKeyProvider.
+func (c *cachedReaderKeys) ReaderKey(ctx context.Context, ownerKeyID [16]byte, mode crypto.Mode) ([]byte, []byte, error) {
+	if as, pub, ok := c.store.Get(ownerKeyID); ok {
+		return as, pub, nil
+	}
+	as, pub, err := c.inner.ReaderKey(ctx, ownerKeyID, mode)
+	if err != nil {
+		return nil, nil, err
+	}
+	_ = c.store.Put(ownerKeyID, as, pub)
+	return as, pub, nil
 }
 
 // splitCSV splits a comma-separated list into trimmed non-empty entries.

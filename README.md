@@ -107,6 +107,14 @@ db_url: "postgres://clavis:...@db-host:5432/clavis"
 peers: "https://ks2.example.com:8443,https://ks3.example.com:8443"
 ```
 
+## Offline access (local SQLite cache)
+
+Once the agent fetches a reader key (AS) from a Key Server and successfully
+opens a document, the key is stored in the local SQLite database
+(`crypto.local_cache_db`), wrapped under the local master key A. Later
+openings read the key from the cache first, so documents keep working
+**without network**. Cache misses fall back to the Key Server.
+
 ## Multi-server failover (agent side)
 
 `server.url` accepts several Key Server addresses separated by commas
@@ -175,6 +183,7 @@ sample in [`settings.yaml`](settings.yaml). Key parameters:
 | `agent.health_listen` | HTTP `/healthz` address (empty disables it) |
 | `crypto.key_file` | local key material file (hex or raw 16/24/32 bytes) |
 | `crypto.algorithm` | default algorithm for new documents |
+| `crypto.local_cache_db` | SQLite path for cached reader keys (offline access) |
 | `policy.allow_uid0` | allow root without further checks |
 | `policy.allow_firejail` | allow Firejail-sandboxed processes |
 | `policy.whitelist` | sanctioned executable names (e.g. `["libreoffice"]`) |

@@ -44,6 +44,10 @@ type CryptoConfig struct {
 	// material (master key A, Ed25519 signing key, server key S, nonce).
 	// Required for v2 document creation when the Key Server is used.
 	IdentityFile string `yaml:"identity_file"`
+	// LocalCacheDB is the path of the local SQLite cache that remembers
+	// previously fetched reader keys (AS), so documents can be opened
+	// again while offline. Empty disables the offline cache.
+	LocalCacheDB string `yaml:"local_cache_db"`
 }
 
 // FuseConfig holds FUSE mount parameters (maps to fuse.* in C++).

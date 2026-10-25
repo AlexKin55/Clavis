@@ -16,6 +16,9 @@ crypto:
   # v2 agent identity state (master key A, signing key, server S/nonce).
   # Required when the Key Server is used.
   identity_file: "/var/lib/clavis/identity.json"
+  # Local SQLite cache of fetched reader keys (offline access).
+  # Empty disables offline caching.
+  local_cache_db: "/var/lib/clavis/cache.db"
 
 policy:
   # Allow access for processes running as root.
