@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/clavis/clavis/internal/config"
+	"github.com/clavis/clavis/internal/crypto"
+	"github.com/clavis/clavis/internal/fuse"
 	"github.com/clavis/clavis/internal/logging"
 	"github.com/clavis/clavis/internal/version"
 )
@@ -46,13 +48,26 @@ func Run(ctx context.Context, cfgPath string) error {
 	if err := prepareMountPoint(cfg.Fuse.MountPoint); err != nil {
 		return err
 	}
+	if cfg.Crypto.KeyFile == "" {
+		return errors.New("crypto.key_file is required for the fuse mount")
+	}
 
-	// The FUSE filesystem initialization will be added in phase 2 (internal/fuse).
-	logger.Info("fuse backend not yet implemented: skipping mount",
-		"directory", cfg.Fuse.Directory,
-		"mount_point", cfg.Fuse.MountPoint,
-		"options", cfg.Fuse.Options,
-	)
+	keyGetter := crypto.NewFileKeyGetter(cfg.Crypto.KeyFile)
+	server, err := fuse.Mount(fuse.MountConfig{
+		SourceDir:  cfg.Fuse.Directory,
+		MountPoint: cfg.Fuse.MountPoint,
+		Options:    cfg.Fuse.Options,
+		KeyGetter:  keyGetter,
+		Logger:     logger.Logger,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := fuse.Unmount(server); err != nil {
+			logger.Error("fuse unmount failed", "error", err)
+		}
+	}()
 
 	health := newHealthServer(cfg.Agent.HealthListen, logger)
 	if err := health.start(); err != nil {

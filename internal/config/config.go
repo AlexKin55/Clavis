@@ -14,9 +14,10 @@ import (
 
 // Config is the root settings structure of the agent.
 type Config struct {
-	Agent AgentConfig `yaml:"agent"`
-	Fuse  FuseConfig  `yaml:"fuse"`
-	Log   LogConfig   `yaml:"log"`
+	Agent  AgentConfig  `yaml:"agent"`
+	Crypto CryptoConfig `yaml:"crypto"`
+	Fuse   FuseConfig   `yaml:"fuse"`
+	Log    LogConfig    `yaml:"log"`
 }
 
 // AgentConfig holds agent identity and service parameters.
@@ -26,6 +27,16 @@ type AgentConfig struct {
 	// HealthListen is the address of the HTTP /healthz endpoint
 	// (e.g. "127.0.0.1:8901"). An empty string disables the health server.
 	HealthListen string `yaml:"health_listen"`
+}
+
+// CryptoConfig holds cryptographic settings.
+type CryptoConfig struct {
+	// KeyFile is the path to the file with the key material
+	// (hex or raw 16/24/32 bytes, see crypto.FileKeyGetter).
+	KeyFile string `yaml:"key_file"`
+	// Algorithm is the default algorithm for new documents
+	// (currently only "aes-256-ctr" is supported).
+	Algorithm string `yaml:"algorithm"`
 }
 
 // FuseConfig holds FUSE mount parameters (maps to fuse.* in C++).
@@ -57,6 +68,10 @@ func Default() *Config {
 		Agent: AgentConfig{
 			ID:           "clavis-001",
 			HealthListen: "127.0.0.1:8901",
+		},
+		Crypto: CryptoConfig{
+			KeyFile:   "",
+			Algorithm: "aes-256-ctr",
 		},
 		Fuse: FuseConfig{
 			Directory:  "/opt/clavis/data",
@@ -111,6 +126,11 @@ func parse(data []byte, cfg *Config) error {
 func (c *Config) Validate() error {
 	if c.Agent.ID == "" {
 		return errors.New("agent.id must not be empty")
+	}
+	switch c.Crypto.Algorithm {
+	case "", "aes-256-ctr":
+	default:
+		return fmt.Errorf("crypto.algorithm %q is not supported", c.Crypto.Algorithm)
 	}
 	if c.Fuse.Directory == "" {
 		return errors.New("fuse.directory must not be empty")

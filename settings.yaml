@@ -8,6 +8,12 @@ agent:
   # Address of the HTTP /healthz endpoint; empty disables the server.
   health_listen: "127.0.0.1:8901"
 
+crypto:
+  # Path to the file with the key material (hex or raw 16/24/32 bytes).
+  key_file: "/etc/clavis/agent.key"
+  # Default algorithm for new documents.
+  algorithm: "aes-256-ctr"
+
 fuse:
   # Directory where the encrypted files physically reside (must exist).
   directory: "/opt/clavis/data"

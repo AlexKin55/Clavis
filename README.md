@@ -18,6 +18,7 @@ clavis/
 │   ├── app/                # initialization, graceful shutdown, health
 │   ├── config/             # settings.yaml loading + validation
 │   ├── crypto/             # file header (UUID/nonce), AES-CTR, key getters
+│   ├── fuse/               # FUSE mirror with on-the-fly encryption
 │   ├── logging/            # slog + rotation (lumberjack)
 │   └── version/            # build version (ldflags)
 ├── scripts/                # helper scripts
@@ -63,6 +64,8 @@ sample in [`settings.yaml`](settings.yaml). Key parameters:
 |---|---|
 | `agent.id` | unique agent ID |
 | `agent.health_listen` | HTTP `/healthz` address (empty disables it) |
+| `crypto.key_file` | key material file (hex or raw 16/24/32 bytes) |
+| `crypto.algorithm` | default algorithm for new documents |
 | `fuse.directory` | directory of the encrypted files (must exist) |
 | `fuse.mount_point` | mount point (created automatically) |
 | `fuse.options` | FUSE arguments |
