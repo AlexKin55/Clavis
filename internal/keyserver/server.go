@@ -355,7 +355,12 @@ func (s *Server) handleGetReaderKey(w http.ResponseWriter, r *http.Request) {
 		Time: time.Now(), AgentID: agentIDFromRequest(r),
 		Document: ownerKeyID, Allowed: true, Reason: "reader key issued",
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"reader_key": hex.EncodeToString(rec.ReaderKey)})
+	// Return the owner's public signature key as well, so the reading
+	// agent can verify the document signature.
+	writeJSON(w, http.StatusOK, map[string]string{
+		"reader_key": hex.EncodeToString(rec.ReaderKey),
+		"pub_sig":    hex.EncodeToString(rec.PubSig),
+	})
 }
 
 // newAgentID returns a server-assigned agent identifier.

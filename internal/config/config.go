@@ -40,6 +40,10 @@ type CryptoConfig struct {
 	// Algorithm is the default algorithm for new documents
 	// (currently only "aes-256-ctr" is supported).
 	Algorithm string `yaml:"algorithm"`
+	// IdentityFile persists the agent v2 identity and registration
+	// material (master key A, Ed25519 signing key, server key S, nonce).
+	// Required for v2 document creation when the Key Server is used.
+	IdentityFile string `yaml:"identity_file"`
 }
 
 // FuseConfig holds FUSE mount parameters (maps to fuse.* in C++).

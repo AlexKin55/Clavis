@@ -27,6 +27,15 @@ type MountConfig struct {
 	Interceptor interceptor.Interceptor
 	// Logger is used for debugging output; may be nil.
 	Logger *slog.Logger
+
+	// v2 identity and server registration material. When Identity is
+	// set, new documents are created with the v2 format.
+	Identity    *crypto.AgentIdentity
+	ServerPub   []byte
+	ServerNonce []byte
+	DefaultMode crypto.Mode
+	// ReaderKeys resolves the owner's reader key for v2 documents.
+	ReaderKeys ReaderKeyProvider
 }
 
 // Mount mounts the secure filesystem and starts serving requests.
@@ -45,6 +54,12 @@ func Mount(cfg MountConfig) (*fuse.Server, error) {
 		KeyGetter:   cfg.KeyGetter,
 		Interceptor: cfg.Interceptor,
 		Logger:      cfg.Logger,
+
+		Identity:    cfg.Identity,
+		ServerPub:   cfg.ServerPub,
+		ServerNonce: cfg.ServerNonce,
+		DefaultMode: cfg.DefaultMode,
+		ReaderKeys:  cfg.ReaderKeys,
 	})
 
 	server, err := fs.Mount(cfg.MountPoint, root.rootNode(), &fs.Options{MountOptions: mountOpts})

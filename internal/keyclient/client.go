@@ -197,11 +197,19 @@ func (c *Client) SetReaderKey(ctx context.Context, req SetReaderKeyRequest) erro
 	return nil
 }
 
-// ReaderKey requests the read-only wrapper key (AS) of the document owner.
-func (c *Client) ReaderKey(ctx context.Context, ownerKeyID string) ([]byte, error) {
+// ReaderMaterial is the owner's read-only key pair material: the reader
+// key AS (unwrap document keys) and the owner's public signature key.
+type ReaderMaterial struct {
+	ReaderKey []byte
+	PubSig    []byte
+}
+
+// ReaderKey requests the read-only wrapper key (AS) and the owner's
+// public signature key.
+func (c *Client) ReaderKey(ctx context.Context, ownerKeyID string) (ReaderMaterial, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+readerKeyPrefix+ownerKeyID+readerKeySuffix, nil)
 	if err != nil {
-		return nil, fmt.Errorf("keyclient: build reader key request: %w", err)
+		return ReaderMaterial{}, fmt.Errorf("keyclient: build reader key request: %w", err)
 	}
 	if c.agentID != "" {
 		httpReq.Header.Set("X-Agent-ID", c.agentID)
@@ -209,26 +217,31 @@ func (c *Client) ReaderKey(ctx context.Context, ownerKeyID string) ([]byte, erro
 
 	resp, err := c.httpc.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("keyclient: reader key request failed: %w", err)
+		return ReaderMaterial{}, fmt.Errorf("keyclient: reader key request failed: %w", err)
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 	if resp.StatusCode != http.StatusOK {
-		return nil, newServerError(resp.StatusCode, resp.Body)
+		return ReaderMaterial{}, newServerError(resp.StatusCode, resp.Body)
 	}
 
 	var out struct {
 		ReaderKey string `json:"reader_key"`
+		PubSig    string `json:"pub_sig"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("keyclient: decode reader key: %w", err)
+		return ReaderMaterial{}, fmt.Errorf("keyclient: decode reader key: %w", err)
 	}
-	key, err := hex.DecodeString(out.ReaderKey)
+	as, err := hex.DecodeString(out.ReaderKey)
 	if err != nil {
-		return nil, fmt.Errorf("keyclient: invalid reader key encoding: %w", err)
+		return ReaderMaterial{}, fmt.Errorf("keyclient: invalid reader key encoding: %w", err)
 	}
-	return key, nil
+	pub, err := hex.DecodeString(out.PubSig)
+	if err != nil {
+		return ReaderMaterial{}, fmt.Errorf("keyclient: invalid pub_sig encoding: %w", err)
+	}
+	return ReaderMaterial{ReaderKey: as, PubSig: pub}, nil
 }
 
 // serverError is a non-OK Key Server response.

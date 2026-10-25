@@ -1,11 +1,18 @@
 // Package fuse implements the Clavis secure FUSE filesystem: a directory
-// with physically encrypted files (header + AES-CTR ciphertext) is mirrored
-// to a mount point, where reads and writes are decrypted/encrypted on the
-// fly. Content on disk is never stored in plaintext.
+// with physically encrypted files is mirrored to a mount point, where
+// reads and writes are decrypted/encrypted on the fly. Content on disk is
+// never stored in plaintext.
+//
+// Two on-disk formats are supported:
+//
+//	v1: [header 32B][ciphertext]
+//	v2: [header 88B][signature 66B][ciphertext]
 package fuse
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -18,52 +25,79 @@ import (
 	"github.com/clavis/clavis/internal/crypto"
 )
 
-// HeaderSize is the on-disk header size of a protected file.
-// It is re-exported here so callers can distinguish the visible size
-// of a file from its physical size.
+// HeaderSize is the on-disk header size of a v1 protected file.
 const HeaderSize = crypto.HeaderSize
 
-// secureFile is an opened protected file. Read and Write operate on the
-// visible (plaintext) content on the fly: data is decrypted/encrypted
-// against the physical file which stores the header followed by the
-// ciphertext payload.
-type secureFile struct {
-	mu      sync.RWMutex
-	f       *os.File
-	header  *crypto.DocumentHeader
-	cryptor crypto.Cryptor
+// ReaderKeyProvider resolves the owner's read-only key material for v2
+// documents (AS + owner public signature key).
+type ReaderKeyProvider interface {
+	// ReaderKey returns the read-key (AS) and the owner's Ed25519 public
+	// key for the given owner identifier.
+	ReaderKey(ctx context.Context, ownerKeyID [16]byte) (readKey, ownerPub []byte, err error)
 }
 
-// Read implements fs.FileReader: it reads ciphertext from the physical
-// file (skipping the header) and decrypts it into the requested range.
+// secureFile is an opened protected file. Read and Write operate on the
+// visible (plaintext) content on the fly.
+type secureFile struct {
+	mu sync.RWMutex
+	f  *os.File
+
+	// Layout for the on-disk representation.
+	headerHeader   *crypto.DocumentHeader // v1 (nil in v2)
+	headerV2       *crypto.HeaderV2       // v2 (nil in v1)
+	headerSize     int64                  // 32 (v1) or 88 (v2)
+	sigSize        int64                  // 0 (v1) or 66 (v2)
+	cryptor        crypto.Cryptor
+	sigBlock       []byte // v2: signature block content
+	ownerPub       []byte // v2: owner public signature key
+	needsSignature bool   // v2: sign on Release
+	identity       *crypto.AgentIdentity
+}
+
+// Read implements fs.FileReader: read ciphertext, decrypt on the fly.
+// For v2 files a full read verifies the owner signature.
 func (h *secureFile) Read(_ context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	cipherText := make([]byte, len(dest))
-	n, err := h.f.ReadAt(cipherText, HeaderSize+off)
+	visible := h.visibleSize()
+	if off >= visible {
+		return fuse.ReadResultData(nil), 0
+	}
+	n := int64(len(dest))
+	if off+n > visible {
+		n = visible - off
+	}
+
+	cipherText := make([]byte, n)
+	rn, err := h.f.ReadAt(cipherText, h.headerSize+h.sigSize+off)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, errno(err)
 	}
-	cipherText = cipherText[:n]
+	cipherText = cipherText[:rn]
 
 	plain, err := h.cryptor.Decrypt(cipherText, off)
 	if err != nil {
 		return nil, syscall.EIO
 	}
+
+	// v2 integrity: verify the owner signature on a full read.
+	if h.headerV2 != nil && off == 0 && n == visible && len(h.ownerPub) > 0 {
+		if e := h.verifySignatureLocked(cipherText); e != 0 {
+			return nil, e
+		}
+	}
+
 	copy(dest, plain)
 	return fuse.ReadResultData(plain), 0
 }
 
-// Write implements fs.FileWriter: it encrypts the plaintext and writes
-// it into the physical file at the corresponding offset. A sparse gap
-// between the current end of file and off is materialized with encrypted
-// zeros so the hole does not read back as garbage.
+// Write implements fs.FileWriter: encrypt and store at the visible offset.
 func (h *secureFile) Write(_ context.Context, data []byte, off int64) (uint32, syscall.Errno) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if err := h.fillGap(off); err != nil {
+	if err := h.fillGapLocked(off); err != nil {
 		return 0, errno(err)
 	}
 
@@ -71,7 +105,7 @@ func (h *secureFile) Write(_ context.Context, data []byte, off int64) (uint32, s
 	if err != nil {
 		return 0, syscall.EIO
 	}
-	n, err := h.f.WriteAt(cipherText, HeaderSize+off)
+	n, err := h.f.WriteAt(cipherText, h.headerSize+h.sigSize+off)
 	if err != nil {
 		return 0, errno(err)
 	}
@@ -92,49 +126,56 @@ func (h *secureFile) Fsync(_ context.Context, _ uint32) syscall.Errno {
 	return errno(h.f.Sync())
 }
 
-// Release implements fs.FileReleaser.
+// Release implements fs.FileReleaser. For v2 newly created files the
+// owner signature is computed and stored before closing.
 func (h *secureFile) Release(_ context.Context) syscall.Errno {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	if h.needsSignature && h.headerV2 != nil && h.identity != nil {
+		if err := h.signLocked(); err != nil {
+			h.needsSignature = false
+			return errno(err)
+		}
+		h.needsSignature = false
+	}
 	return errno(h.f.Close())
 }
 
-// truncateToVisible resizes the physical file to headerSize+size,
-// keeping the header intact. Growing is done by materializing encrypted
-// zeros so the added region reads back as zeros, not as keystream noise.
+// truncateToVisible resizes the payload to size, keeping layout intact.
 func (h *secureFile) truncateToVisible(size int64) syscall.Errno {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	current := h.visibleSize()
 	if size <= current {
-		if err := h.f.Truncate(HeaderSize + size); err != nil {
+		if err := h.f.Truncate(h.headerSize + h.sigSize + size); err != nil {
 			return errno(err)
 		}
 		return 0
 	}
-	if err := h.fillGap(size); err != nil {
+	if err := h.fillGapLocked(size); err != nil {
 		return errno(err)
 	}
 	return 0
 }
 
-// visibleSize returns the current payload size of the physical file.
+// visibleSize returns the current payload size.
 func (h *secureFile) visibleSize() int64 {
 	var st syscall.Stat_t
 	if err := syscall.Fstat(int(h.f.Fd()), &st); err != nil {
 		return 0
 	}
-	size := st.Size - int64(HeaderSize)
+	size := st.Size - h.headerSize - h.sigSize
 	if size < 0 {
 		return 0
 	}
 	return size
 }
 
-// fillGap materializes encrypted zeros between the current end of the
-// payload and endVisible, so sparse holes read back as zeros.
-func (h *secureFile) fillGap(endVisible int64) error {
+// fillGapLocked materializes encrypted zeros up to endVisible.
+// The caller must hold h.mu.
+func (h *secureFile) fillGapLocked(endVisible int64) error {
 	current := h.visibleSize()
 	if endVisible <= current {
 		return nil
@@ -144,16 +185,54 @@ func (h *secureFile) fillGap(endVisible int64) error {
 	if err != nil {
 		return err
 	}
-	if _, err := h.f.WriteAt(cipher, HeaderSize+current); err != nil {
+	if _, err := h.f.WriteAt(cipher, h.headerSize+h.sigSize+current); err != nil {
 		return err
 	}
 	return nil
 }
 
-// createProtectedFile creates a new protected file: it generates a
-// document UUID, writes the header and returns an opened secureFile.
-// The context carries the subject for the key getter.
+// verifySignatureLocked verifies the owner signature over the ciphertext.
+func (h *secureFile) verifySignatureLocked(ciphertext []byte) syscall.Errno {
+	payload := signaturePayloadForV2(h.headerV2, ciphertext)
+	if !crypto.VerifySignature(h.ownerPub, payload, h.signatureBytes()) {
+		return syscall.EACCES
+	}
+	return 0
+}
+
+// signLocked computes and stores the signature block for a finished v2
+// file (called from Release).
+func (h *secureFile) signLocked() error {
+	visible := h.visibleSize()
+	cipher := make([]byte, visible)
+	if _, err := h.f.ReadAt(cipher, h.headerSize+h.sigSize); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	block := crypto.SignatureBlock(h.headerV2, h.identity, cipher)
+	if _, err := h.f.WriteAt(block, h.headerSize); err != nil {
+		return err
+	}
+	h.sigBlock = block
+	return nil
+}
+
+func (h *secureFile) signatureBytes() []byte {
+	if len(h.sigBlock) >= crypto.MetaSigLenBytes {
+		return h.sigBlock[crypto.MetaSigLenBytes:]
+	}
+	return nil
+}
+
+// createProtectedFile creates a protected file, choosing the format based
+// on the configuration (v2 when the identity is available).
 func (r *SecureRoot) createProtectedFile(ctx context.Context, path string, mode uint32) (*secureFile, error) {
+	if r.cfg.Identity != nil && len(r.cfg.ServerPub) > 0 && len(r.cfg.ServerNonce) > 0 {
+		return r.createProtectedFileV2(ctx, path, mode)
+	}
+	return r.createProtectedFileV1(ctx, path, mode)
+}
+
+func (r *SecureRoot) createProtectedFileV1(ctx context.Context, path string, mode uint32) (*secureFile, error) {
 	osf, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, os.FileMode(mode))
 	if err != nil {
 		return nil, err
@@ -174,7 +253,7 @@ func (r *SecureRoot) createProtectedFile(ctx context.Context, path string, mode 
 		return nil, fmt.Errorf("write header: %w", err)
 	}
 
-	file, err := newFileHandle(ctx, r, osf, header)
+	file, err := newFileHandleV1(ctx, r, osf, header)
 	if err != nil {
 		_ = osf.Close()
 		return nil, err
@@ -182,42 +261,163 @@ func (r *SecureRoot) createProtectedFile(ctx context.Context, path string, mode 
 	return file, nil
 }
 
-// openProtectedFile opens an existing protected file and resolves its
-// header, nonce and cryptor. The context carries the subject.
+// createProtectedFileV2 creates a v2 document: fresh DK wrapped under the
+// owner's reader key AS, owner-key header and a placeholder signature that
+// is finalized on Release.
+func (r *SecureRoot) createProtectedFileV2(_ context.Context, path string, mode uint32) (*secureFile, error) {
+	identity := r.cfg.Identity
+	osf, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, os.FileMode(mode))
+	if err != nil {
+		return nil, err
+	}
+
+	uuid, err := crypto.NewUUID()
+	if err != nil {
+		_ = osf.Close()
+		return nil, err
+	}
+	dk := make([]byte, 32)
+	if _, err := rand.Read(dk); err != nil {
+		_ = osf.Close()
+		return nil, err
+	}
+	var docNonce [8]byte
+	if _, err := rand.Read(docNonce[:]); err != nil {
+		_ = osf.Close()
+		return nil, err
+	}
+	readerKey, err := identity.ReaderKey(r.cfg.ServerPub, r.cfg.ServerNonce)
+	if err != nil {
+		_ = osf.Close()
+		return nil, err
+	}
+	wrapped, err := crypto.WrapKey(readerKey, dk)
+	if err != nil {
+		_ = osf.Close()
+		return nil, err
+	}
+	var wrappedDK [crypto.WrappedKeySize]byte
+	copy(wrappedDK[:], wrapped)
+
+	modeFlag := r.cfg.DefaultMode
+	if modeFlag == 0 {
+		modeFlag = crypto.ModeProxy
+	}
+	header, err := crypto.NewHeaderV2(identity.OwnerKeyID(), uuid, modeFlag, docNonce, wrappedDK)
+	if err != nil {
+		_ = osf.Close()
+		return nil, err
+	}
+
+	// Placeholder signature block; finalized at Release.
+	sigBlock := make([]byte, crypto.SignatureBlockLen)
+	physical := make([]byte, 0, crypto.HeaderV2Size+crypto.SignatureBlockLen)
+	physical = append(physical, header.Encode()...)
+	physical = append(physical, sigBlock...)
+	if _, err := osf.WriteAt(physical, 0); err != nil {
+		_ = osf.Close()
+		return nil, err
+	}
+
+	cryptor, err := crypto.NewAesCtr(dk, docNonce)
+	if err != nil {
+		_ = osf.Close()
+		return nil, err
+	}
+	return &secureFile{
+		f:              osf,
+		headerV2:       header,
+		headerSize:     crypto.HeaderV2Size,
+		sigSize:        crypto.SignatureBlockLen,
+		cryptor:        cryptor,
+		needsSignature: true,
+		identity:       identity,
+	}, nil
+}
+
+// openProtectedFile opens a protected file, detecting the format version.
 func (r *SecureRoot) openProtectedFile(ctx context.Context, path string, flags int) (*secureFile, error) {
 	osf, err := os.OpenFile(path, flags, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	headerBytes := make([]byte, HeaderSize)
-	if _, err := io.ReadFull(osf, headerBytes); err != nil {
+	// The header version lives at offset 4 (after the 4-byte magic).
+	probe := make([]byte, 5)
+	if _, err := io.ReadFull(osf, probe); err != nil {
 		_ = osf.Close()
 		return nil, fmt.Errorf("read header of %q: %w", path, err)
 	}
-	header, err := crypto.ParseHeader(headerBytes)
-	if err != nil {
+	if _, err := osf.Seek(0, io.SeekStart); err != nil {
 		_ = osf.Close()
 		return nil, err
 	}
 
-	// O_TRUNC must shrink the payload while the header stays intact.
-	if flags&os.O_TRUNC != 0 {
-		if err := osf.Truncate(HeaderSize); err != nil {
+	if probe[4] == crypto.HeaderVersion+1 {
+		file, err := r.openProtectedFileV2(ctx, osf, path)
+		if err != nil {
 			_ = osf.Close()
 			return nil, err
 		}
-		if _, err := osf.WriteAt(header.Encode(), 0); err != nil {
-			_ = osf.Close()
-			return nil, fmt.Errorf("rewrite header: %w", err)
-		}
+		return file, nil
 	}
-
-	return newFileHandle(ctx, r, osf, header)
+	return r.openProtectedFileV1(ctx, osf, path)
 }
 
-// newFileHandle resolves the key and builds the cryptor for the header.
-func newFileHandle(ctx context.Context, r *SecureRoot, osf *os.File, header *crypto.DocumentHeader) (*secureFile, error) {
+func (r *SecureRoot) openProtectedFileV1(ctx context.Context, osf *os.File, _ string) (*secureFile, error) {
+	headerBytes := make([]byte, crypto.HeaderSize)
+	if _, err := io.ReadFull(osf, headerBytes); err != nil {
+		return nil, fmt.Errorf("read v1 header: %w", err)
+	}
+	header, err := crypto.ParseHeader(headerBytes)
+	if err != nil {
+		return nil, err
+	}
+	return newFileHandleV1(ctx, r, osf, header)
+}
+
+func (r *SecureRoot) openProtectedFileV2(ctx context.Context, osf *os.File, _ string) (*secureFile, error) {
+	headerBytes := make([]byte, crypto.HeaderV2Size)
+	if _, err := io.ReadFull(osf, headerBytes); err != nil {
+		return nil, fmt.Errorf("read v2 header: %w", err)
+	}
+	header, err := crypto.ParseHeaderV2(headerBytes)
+	if err != nil {
+		return nil, err
+	}
+	if r.cfg.ReaderKeys == nil {
+		return nil, errors.New("fuse: reader key provider not configured")
+	}
+	readKey, ownerPub, err := r.cfg.ReaderKeys.ReaderKey(ctx, header.OwnerKeyID)
+	if err != nil {
+		return nil, err
+	}
+	dk, err := crypto.UnwrapKey(readKey, header.WrappedDK[:])
+	if err != nil {
+		return nil, fmt.Errorf("fuse: unwrap document key: %w", err)
+	}
+	cryptor, err := crypto.NewAesCtr(dk, header.Nonce)
+	if err != nil {
+		return nil, err
+	}
+
+	sigBlock := make([]byte, crypto.SignatureBlockLen)
+	if _, err := io.ReadFull(osf, sigBlock); err != nil {
+		return nil, fmt.Errorf("read signature block: %w", err)
+	}
+
+	return &secureFile{
+		f:          osf,
+		headerV2:   header,
+		headerSize: crypto.HeaderV2Size,
+		sigSize:    crypto.SignatureBlockLen,
+		cryptor:    cryptor,
+		sigBlock:   sigBlock,
+		ownerPub:   ownerPub,
+	}, nil
+}
+
+func newFileHandleV1(ctx context.Context, r *SecureRoot, osf *os.File, header *crypto.DocumentHeader) (*secureFile, error) {
 	key, err := r.cfg.KeyGetter.LoadKey(ctx, header.UUID)
 	if err != nil {
 		return nil, fmt.Errorf("load key: %w", err)
@@ -226,7 +426,12 @@ func newFileHandle(ctx context.Context, r *SecureRoot, osf *os.File, header *cry
 	if err != nil {
 		return nil, err
 	}
-	return &secureFile{f: osf, header: header, cryptor: cryptor}, nil
+	return &secureFile{
+		f:            osf,
+		headerHeader: header,
+		headerSize:   crypto.HeaderSize,
+		cryptor:      cryptor,
+	}, nil
 }
 
 // errno converts a Go error into a FUSE errno.
@@ -250,4 +455,20 @@ func errno(err error) syscall.Errno {
 	default:
 		return syscall.EIO
 	}
+}
+
+// signaturePayloadForV2 mirrors crypto.signaturePayload.
+func signaturePayloadForV2(h *crypto.HeaderV2, ciphertext []byte) []byte {
+	header := h.Encode()
+	digest := sha256sum(ciphertext)
+	payload := make([]byte, 0, len(header)+len(digest))
+	payload = append(payload, header...)
+	payload = append(payload, digest...)
+	return payload
+}
+
+func sha256sum(b []byte) []byte {
+	h := sha256.New()
+	_, _ = h.Write(b)
+	return h.Sum(nil)
 }

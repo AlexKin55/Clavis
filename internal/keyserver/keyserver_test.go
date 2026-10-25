@@ -278,8 +278,11 @@ func TestV2AgentRegistrationAndReaderKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReaderKey() error: %v", err)
 	}
-	if !bytes.Equal(got, asA) {
+	if !bytes.Equal(got.ReaderKey, asA) {
 		t.Error("reader key round trip mismatch")
+	}
+	if !bytes.Equal(got.PubSig, identity.PublicSignatureKey()) {
+		t.Error("pub_sig round trip mismatch")
 	}
 
 	// Unknown owners are not found.

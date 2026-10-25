@@ -20,6 +20,16 @@ var ErrCorruptData = errors.New("crypto: corrupt key material")
 // ErrKeyTooShort reports keys shorter than two 64-bit blocks.
 var ErrKeyTooShort = errors.New("crypto: key too short for AES key wrap")
 
+// WrapKey protects the plaintext key under the KEK using RFC 3394.
+func WrapKey(kek, plaintext []byte) ([]byte, error) {
+	return wrapKey(kek, plaintext)
+}
+
+// UnwrapKey recovers the plaintext key from the wrapped blob.
+func UnwrapKey(kek, wrapped []byte) ([]byte, error) {
+	return unwrapKey(kek, wrapped)
+}
+
 // wrapKey encrypts (wraps) the plaintext key with the KEK using RFC 3394.
 func wrapKey(kek, plaintext []byte) ([]byte, error) {
 	if len(plaintext)%8 != 0 {

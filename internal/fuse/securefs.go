@@ -23,13 +23,23 @@ const attrTimeout = time.Second
 type Config struct {
 	// SourceDir is the directory with the physically encrypted files.
 	SourceDir string
-	// KeyGetter provides the key material for documents.
+	// KeyGetter provides the key material for v1 documents.
 	KeyGetter crypto.KeyGetter
 	// Interceptor, if set, decides whether the calling process may open
 	// a document. A nil interceptor disables access control (tests/demo).
 	Interceptor interceptor.Interceptor
 	// Logger is used for debugging output; may be nil.
 	Logger *slog.Logger
+
+	// v2 fields: when Identity is set, new documents are created with the
+	// v2 header (owner key, wrapped DK, signature).
+	Identity    *crypto.AgentIdentity
+	ServerPub   []byte
+	ServerNonce []byte
+	// DefaultMode is the sharing mode for new documents (Default: proxy).
+	DefaultMode crypto.Mode
+	// ReaderKeys resolves the owner's read-only key material for v2 reads.
+	ReaderKeys ReaderKeyProvider
 }
 
 // SecureRoot holds the shared configuration of the filesystem.

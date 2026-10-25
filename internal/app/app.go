@@ -7,6 +7,7 @@ package app
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/clavis/clavis/internal/agentid"
 	"github.com/clavis/clavis/internal/config"
 	"github.com/clavis/clavis/internal/crypto"
 	"github.com/clavis/clavis/internal/fuse"
@@ -55,6 +57,12 @@ func Run(ctx context.Context, cfgPath string) error {
 		return errors.New("crypto.key_file is required for the fuse mount")
 	}
 
+	var (
+		identity    *crypto.AgentIdentity
+		serverPub   []byte
+		serverNonce []byte
+		readerKeys  fuse.ReaderKeyProvider
+	)
 	var keyGetter crypto.KeyGetter = crypto.NewFileKeyGetter(cfg.Crypto.KeyFile)
 	if cfg.Server.URL != "" {
 		tlsCfg, err := keyclient.NewTLSConfig(keyclient.TLSConfig{
@@ -69,7 +77,30 @@ func Run(ctx context.Context, cfgPath string) error {
 			time.Duration(cfg.Server.TimeoutSeconds)*time.Second)
 		client.SetAgentID(cfg.Agent.ID)
 		keyGetter = keyclient.NewGetter(client, keyclient.NewCache())
-		logger.Info("using key server", "url", cfg.Server.URL)
+
+		// v2: persistent agent identity + registration + reader keys.
+		if cfg.Crypto.IdentityFile == "" {
+			return errors.New("crypto.identity_file is required with a key server")
+		}
+		state, err := agentid.LoadOrCreate(cfg.Crypto.IdentityFile)
+		if err != nil {
+			return fmt.Errorf("agent identity: %w", err)
+		}
+		if err := agentid.EnsureRegistered(ctx, client, state, cfg.Crypto.IdentityFile); err != nil {
+			return fmt.Errorf("agent registration: %w", err)
+		}
+		identity, err = state.Identity()
+		if err != nil {
+			return fmt.Errorf("agent identity: %w", err)
+		}
+		if serverPub, err = state.ServerPub(); err != nil {
+			return err
+		}
+		if serverNonce, err = state.ServerNonceBytes(); err != nil {
+			return err
+		}
+		readerKeys = serverReaderKeys{client: client}
+		logger.Info("using key server", "url", cfg.Server.URL, "agent_id", state.AgentID)
 	} else if cfg.Token.ModulePath != "" {
 		backend, err := token.Open(token.Config{
 			ModulePath:      cfg.Token.ModulePath,
@@ -101,6 +132,11 @@ func Run(ctx context.Context, cfgPath string) error {
 		KeyGetter:   keyGetter,
 		Interceptor: policy,
 		Logger:      logger.Logger,
+		Identity:    identity,
+		ServerPub:   serverPub,
+		ServerNonce: serverNonce,
+		DefaultMode: crypto.ModeProxy,
+		ReaderKeys:  readerKeys,
 	})
 	if err != nil {
 		return err
@@ -120,6 +156,17 @@ func Run(ctx context.Context, cfgPath string) error {
 	<-ctx.Done()
 	logger.Info("shutdown signal received, stopping agent")
 	return nil
+}
+
+// serverReaderKeys adapts keyclient.Client to fuse.ReaderKeyProvider.
+type serverReaderKeys struct {
+	client *keyclient.Client
+}
+
+// ReaderKey implements fuse.ReaderKeyProvider.
+func (s serverReaderKeys) ReaderKey(ctx context.Context, ownerKeyID [16]byte) ([]byte, []byte, error) {
+	m, err := s.client.ReaderKey(ctx, hex.EncodeToString(ownerKeyID[:]))
+	return m.ReaderKey, m.PubSig, err
 }
 
 // prepareMountPoint makes sure the mount point directory exists.

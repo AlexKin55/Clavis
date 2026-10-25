@@ -337,10 +337,10 @@ func TestUUIDInHeader(t *testing.T) {
 	}()
 
 	zero := [16]byte{}
-	if bytes.Equal(f.header.UUID[:], zero[:]) {
+	if bytes.Equal(f.headerHeader.UUID[:], zero[:]) {
 		t.Error("document UUID is all zeros")
 	}
-	if f.header.Algorithm != crypto.AlgorithmAes256Ctr {
-		t.Errorf("Algorithm = %d, want %d", f.header.Algorithm, crypto.AlgorithmAes256Ctr)
+	if f.headerHeader.Algorithm != crypto.AlgorithmAes256Ctr {
+		t.Errorf("Algorithm = %d, want %d", f.headerHeader.Algorithm, crypto.AlgorithmAes256Ctr)
 	}
 }
