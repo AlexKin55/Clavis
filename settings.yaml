@@ -37,8 +37,11 @@ token:
   blobs_dir: "/var/lib/clavis/tokens"
 
 server:
-  # Key Server URL; empty disables the server and uses the local key file.
+  # Key Server URLs separated by commas. The agent registers a reader key
+  # per server and fails over to the next healthy one if one is down.
   url: ""
+  # Relay addresses, comma separated, paired with url by index.
+  relay_addr: ""
   # CA bundle that signed the server certificate (mTLS).
   ca_file: "/etc/clavis/server-ca.pem"
   # Agent client certificate and private key (mTLS).
@@ -46,8 +49,6 @@ server:
   key_file: "/etc/clavis/agent-key.pem"
   # Request timeout in seconds.
   timeout_seconds: 10
-  # Key Server relay address for e2e-mode documents (direct key exchange).
-  relay_addr: "127.0.0.1:8444"
 
 fuse:
   # Directory where the encrypted files physically reside (must exist).

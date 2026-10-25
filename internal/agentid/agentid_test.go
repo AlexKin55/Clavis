@@ -76,18 +76,18 @@ func TestEnsureRegistered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := EnsureRegistered(ctx, client, state, path); err != nil {
+	if err := EnsureRegistered(ctx, keyclient.NewMultiClient([]*keyclient.Client{client}), []string{srv.URL}, state, path); err != nil {
 		t.Fatalf("EnsureRegistered() error: %v", err)
 	}
-	if state.AgentID == "" {
+	if len(state.Servers) == 0 || state.Servers[0].AgentID == "" {
 		t.Fatal("agent id was not assigned")
 	}
 
-	agentID := state.AgentID
-	if err := EnsureRegistered(ctx, client, state, path); err != nil {
+	agentID := state.Servers[0].AgentID
+	if err := EnsureRegistered(ctx, keyclient.NewMultiClient([]*keyclient.Client{client}), []string{srv.URL}, state, path); err != nil {
 		t.Fatalf("EnsureRegistered() second call error: %v", err)
 	}
-	if state.AgentID != agentID {
+	if state.Servers[0].AgentID != agentID {
 		t.Error("agent id changed on repeated registration")
 	}
 }
@@ -104,7 +104,7 @@ func TestDerivedReaderKeyMatchesServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureRegistered(ctx, client, state, path); err != nil {
+	if err := EnsureRegistered(ctx, keyclient.NewMultiClient([]*keyclient.Client{client}), []string{srv.URL}, state, path); err != nil {
 		t.Fatal(err)
 	}
 

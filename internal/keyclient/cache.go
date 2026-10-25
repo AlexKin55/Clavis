@@ -77,19 +77,20 @@ func (c *Cache) Revoke(uuid string) {
 	c.revoke(uuid)
 }
 
-// Getter adapts keyclient.Client to crypto.KeyGetter: it resolves the
-// subject from the context, issues a key on a miss and caches it.
+// Getter adapts a KeyIssuer (a single Client or a failover MultiClient)
+// to crypto.KeyGetter: it resolves the subject from the context, issues a
+// key on a miss and caches it.
 type Getter struct {
-	client *Client
+	issuer KeyIssuer
 	cache  *Cache
 }
 
 // NewGetter creates the KeyGetter adapter.
-func NewGetter(client *Client, cache *Cache) *Getter {
+func NewGetter(issuer KeyIssuer, cache *Cache) *Getter {
 	if cache == nil {
 		cache = NewCache()
 	}
-	return &Getter{client: client, cache: cache}
+	return &Getter{issuer: issuer, cache: cache}
 }
 
 // LoadKey implements crypto.KeyGetter. The subject is taken from the
@@ -101,7 +102,7 @@ func (g *Getter) LoadKey(ctx context.Context, docUUID [16]byte) ([]byte, error) 
 		return key, nil
 	}
 
-	resp, err := g.client.IssueKey(ctx, IssueRequest{
+	resp, err := g.issuer.IssueKey(ctx, IssueRequest{
 		DocumentUUID: uuid,
 		Subject:      subjectFromContext(ctx),
 	})

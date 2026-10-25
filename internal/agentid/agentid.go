@@ -1,7 +1,7 @@
 // Package agentid persists the agent v2 state: the local identity
-// (master key A + Ed25519 signing key), the registration materials
-// returned by the Key Server (agent id, server public key S, nonce) and
-// the derived reader key registration. The master key never leaves the
+// (master key A + Ed25519 signing key) and, per Key Server, the
+// registration materials (agent id, server public key S, nonce) plus the
+// derived reader key registration. The master key never leaves the
 // workstation.
 package agentid
 
@@ -18,13 +18,29 @@ import (
 	"github.com/clavis/clavis/internal/keyclient"
 )
 
+// ServerState holds the registration data for one Key Server.
+type ServerState struct {
+	// URL of the server (the raw configured address).
+	URL         string `json:"url"`
+	AgentID     string `json:"agent_id"`
+	ServerPub   string `json:"server_public_key"`
+	ServerNonce string `json:"server_nonce"`
+}
+
 // State is the persisted agent v2 state.
 type State struct {
-	AgentID      string `json:"agent_id"`
+	// MasterKeyHex and SigPrivHex are the local identity (never exposed).
 	MasterKeyHex string `json:"master_key"`
 	SigPrivHex   string `json:"sig_private_key"`
-	ServerPubHex string `json:"server_public_key"`
-	ServerNonce  string `json:"server_nonce"`
+
+	// Servers holds per-server registrations. When empty, the legacy
+	// single-server fields below are used.
+	Servers []ServerState `json:"servers,omitempty"`
+
+	// Legacy single-server fields (kept for backward compatibility).
+	AgentID      string `json:"agent_id,omitempty"`
+	ServerPubHex string `json:"server_public_key,omitempty"`
+	ServerNonce  string `json:"server_nonce,omitempty"`
 }
 
 // Identity reconstructs the crypto.AgentIdentity from the state.
@@ -37,22 +53,36 @@ func (s *State) Identity() (*crypto.AgentIdentity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agentid: signing key: %w", err)
 	}
-	pub := priv[ed25519.SeedSize:]
-
-	// Enforce a canonic 32-byte master key.
-	key := make([]byte, crypto.MasterKeySize)
 	if len(master) != crypto.MasterKeySize {
 		return nil, fmt.Errorf("agentid: master key length %d", len(master))
 	}
-	copy(key, master)
-	return &crypto.AgentIdentity{MasterKey: key, SigPriv: ed25519.PrivateKey(priv), SigPub: pub}, nil
+	return &crypto.AgentIdentity{
+		MasterKey: master,
+		SigPriv:   ed25519.PrivateKey(priv),
+		SigPub:    priv[ed25519.SeedSize:],
+	}, nil
 }
 
-// ServerPub returns the server public key S (raw bytes).
-func (s *State) ServerPub() ([]byte, error) { return hex.DecodeString(s.ServerPubHex) }
+// ServerPub returns the server public key S of the first registration.
+func (s *State) ServerPub() ([]byte, error) {
+	return hex.DecodeString(s.primary().ServerPub)
+}
 
-// ServerNonceBytes returns the registration nonce.
-func (s *State) ServerNonceBytes() ([]byte, error) { return hex.DecodeString(s.ServerNonce) }
+// ServerNonceBytes returns the registration nonce of the first server.
+func (s *State) ServerNonceBytes() ([]byte, error) {
+	return hex.DecodeString(s.primary().ServerNonce)
+}
+
+func (s *State) primary() ServerState {
+	if len(s.Servers) > 0 {
+		return s.Servers[0]
+	}
+	return ServerState{
+		AgentID:     s.AgentID,
+		ServerPub:   s.ServerPubHex,
+		ServerNonce: s.ServerNonce,
+	}
+}
 
 // LoadOrCreate loads the persisted state or generates a fresh identity on
 // first use (file mode 0600).
@@ -62,6 +92,14 @@ func LoadOrCreate(path string) (*State, error) {
 		var s State
 		if err := json.Unmarshal(data, &s); err != nil {
 			return nil, fmt.Errorf("agentid: parse state %q: %w", path, err)
+		}
+		// Migrate the legacy single-server layout into Servers.
+		if len(s.Servers) == 0 && s.AgentID != "" {
+			s.Servers = []ServerState{{
+				AgentID:     s.AgentID,
+				ServerPub:   s.ServerPubHex,
+				ServerNonce: s.ServerNonce,
+			}}
 		}
 		return &s, nil
 	}
@@ -83,7 +121,7 @@ func LoadOrCreate(path string) (*State, error) {
 	return s, nil
 }
 
-// Save persists the state atomically-ish (write + fsync).
+// Save persists the state atomically.
 func (s *State) Save(path string) error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
@@ -102,50 +140,85 @@ func (s *State) Save(path string) error {
 	return nil
 }
 
-// EnsureRegistered registers the agent with the Key Server if it does not
-// have an agent id yet, then registers the derived reader key (AS).
-// The state is persisted to statePath after any registration change.
-func EnsureRegistered(ctx context.Context, client *keyclient.Client, state *State, statePath string) error {
+// EnsureRegistered registers the agent with every configured Key Server
+// (deriving a per-server reader key AS) and uploads those reader keys.
+// Unreachable servers are skipped so the agent keeps working with the
+// remaining ones; the missing registration is retried on the next start.
+func EnsureRegistered(ctx context.Context, multi *keyclient.MultiClient, urls []string, state *State, statePath string) error {
 	identity, err := state.Identity()
 	if err != nil {
 		return err
 	}
 
-	if state.AgentID == "" || state.ServerPubHex == "" {
-		reg, err := client.Register(ctx, keyclient.RegisterRequest{
-			DeviceID: "clavis-device",
-			PubSig:   identity.PublicSignatureKey(),
-		})
-		if err != nil {
-			return fmt.Errorf("agentid: register: %w", err)
+	serverCount := len(urls)
+	if serverCount == 0 {
+		serverCount = multi.Length()
+	}
+	changed := false
+	for i := 0; i < serverCount; i++ {
+		url := ""
+		if i < len(urls) {
+			url = urls[i]
 		}
-		state.AgentID = reg.AgentID
-		state.ServerPubHex = reg.PublicKeyServer
-		state.ServerNonce = reg.NonceServer
-		if statePath != "" {
-			if err := state.Save(statePath); err != nil {
-				return err
+		ss := findServer(state, url, i)
+
+		if ss == nil {
+			reg, err := multi.RegisterAt(ctx, i, keyclient.RegisterRequest{
+				DeviceID: "clavis-device",
+				PubSig:   identity.PublicSignatureKey(),
+			})
+			if err != nil {
+				// Server unreachable: skip this one, keep going.
+				continue
 			}
+			ss = &ServerState{
+				URL:         url,
+				AgentID:     reg.AgentID,
+				ServerPub:   reg.PublicKeyServer,
+				ServerNonce: reg.NonceServer,
+			}
+			if i < len(state.Servers) {
+				state.Servers[i] = *ss
+			} else {
+				state.Servers = append(state.Servers, *ss)
+			}
+			changed = true
+		}
+
+		pub, err := hex.DecodeString(ss.ServerPub)
+		if err != nil || len(ss.ServerNonce) == 0 {
+			continue
+		}
+		nonce, err := hex.DecodeString(ss.ServerNonce)
+		if err != nil {
+			continue
+		}
+		as, err := identity.ReaderKey(pub, nonce)
+		if err != nil {
+			continue
+		}
+		if err := multi.SetReaderKeyAt(ctx, i, keyclient.SetReaderKeyRequest{
+			AgentID:   ss.AgentID,
+			ReaderKey: as,
+		}); err != nil {
+			continue
 		}
 	}
 
-	pubServer, err := hex.DecodeString(state.ServerPubHex)
-	if err != nil {
-		return fmt.Errorf("agentid: server pub: %w", err)
+	if changed && statePath != "" {
+		return state.Save(statePath)
 	}
-	nonce, err := hex.DecodeString(state.ServerNonce)
-	if err != nil {
-		return fmt.Errorf("agentid: server nonce: %w", err)
+	return nil
+}
+
+func findServer(state *State, url string, index int) *ServerState {
+	if index >= 0 && index < len(state.Servers) {
+		return &state.Servers[index]
 	}
-	as, err := identity.ReaderKey(pubServer, nonce)
-	if err != nil {
-		return err
-	}
-	if err := client.SetReaderKey(ctx, keyclient.SetReaderKeyRequest{
-		AgentID:   state.AgentID,
-		ReaderKey: as,
-	}); err != nil {
-		return fmt.Errorf("agentid: set reader key: %w", err)
+	for i := range state.Servers {
+		if state.Servers[i].URL == url {
+			return &state.Servers[i]
+		}
 	}
 	return nil
 }

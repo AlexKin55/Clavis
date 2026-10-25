@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/clavis/clavis/internal/agentid"
@@ -74,12 +75,26 @@ func Run(ctx context.Context, cfgPath string) error {
 		if err != nil {
 			return fmt.Errorf("key server tls: %w", err)
 		}
-		client := keyclient.NewClient(cfg.Server.URL, tlsCfg,
-			time.Duration(cfg.Server.TimeoutSeconds)*time.Second)
-		client.SetAgentID(cfg.Agent.ID)
-		keyGetter = keyclient.NewGetter(client, keyclient.NewCache())
+		// Multiple servers may be configured (comma separated): the agent
+		// registers a reader key (AS) per server and fails over to the
+		// next healthy one.
+		urls := splitCSV(cfg.Server.URL)
+		relays := splitCSV(cfg.Server.RelayAddr)
+		if len(urls) == 0 {
+			return errors.New("server.url must not be empty")
+		}
+		clientTimeout := time.Duration(cfg.Server.TimeoutSeconds) * time.Second
+		clients := make([]*keyclient.Client, 0, len(urls))
+		for _, u := range urls {
+			client := keyclient.NewClient(u, tlsCfg, clientTimeout)
+			client.SetAgentID(cfg.Agent.ID)
+			clients = append(clients, client)
+		}
+		multi := keyclient.NewMultiClient(clients)
+		keyGetter = keyclient.NewGetter(multi, keyclient.NewCache())
 
-		// v2: persistent agent identity + registration + reader keys.
+		// v2: persistent agent identity + registration + reader keys
+		// on every configured server.
 		if cfg.Crypto.IdentityFile == "" {
 			return errors.New("crypto.identity_file is required with a key server")
 		}
@@ -87,7 +102,7 @@ func Run(ctx context.Context, cfgPath string) error {
 		if err != nil {
 			return fmt.Errorf("agent identity: %w", err)
 		}
-		if err := agentid.EnsureRegistered(ctx, client, state, cfg.Crypto.IdentityFile); err != nil {
+		if err := agentid.EnsureRegistered(ctx, multi, urls, state, cfg.Crypto.IdentityFile); err != nil {
 			return fmt.Errorf("agent registration: %w", err)
 		}
 		identity, err = state.Identity()
@@ -101,11 +116,11 @@ func Run(ctx context.Context, cfgPath string) error {
 			return err
 		}
 		readerKeys = routerReaderKeys{
-			client:    client,
-			relayAddr: cfg.Server.RelayAddr,
-			agentID:   cfg.Agent.ID,
+			multi:   multi,
+			relays:  relays,
+			agentID: cfg.Agent.ID,
 		}
-		logger.Info("using key server", "url", cfg.Server.URL, "agent_id", state.AgentID)
+		logger.Info("using key servers", "urls", urls, "count", len(urls))
 	} else if cfg.Token.ModulePath != "" {
 		backend, err := token.Open(token.Config{
 			ModulePath:      cfg.Token.ModulePath,
@@ -163,28 +178,29 @@ func Run(ctx context.Context, cfgPath string) error {
 	return nil
 }
 
-// routerReaderKeys adapts keyclient.Client and the e2e relay to
-// fuse.ReaderKeyProvider. Proxy-mode documents resolve the reader key
-// through the server; e2e-mode documents exchange it directly through the
-// relay (the server only organizes the rendezvous).
+// routerReaderKeys adapts the failover key-server client and the e2e
+// relays to fuse.ReaderKeyProvider. Proxy-mode documents resolve the
+// reader key through the first healthy server; e2e-mode documents
+// exchange it directly through the relay of the last healthy server.
 type routerReaderKeys struct {
-	client    *keyclient.Client
-	relayAddr string
-	agentID   string
+	multi   *keyclient.MultiClient
+	relays  []string
+	agentID string
 }
 
 // ReaderKey implements fuse.ReaderKeyProvider.
 func (r routerReaderKeys) ReaderKey(ctx context.Context, ownerKeyID [16]byte, mode crypto.Mode) ([]byte, []byte, error) {
 	ownerHex := hex.EncodeToString(ownerKeyID[:])
 	if mode == crypto.ModeE2E {
-		if r.relayAddr == "" {
+		relayAddr := relayFor(r.relays, r.multi.LastSuccessIndex())
+		if relayAddr == "" {
 			return nil, nil, errors.New("e2e mode requires server.relay_addr")
 		}
-		session, err := r.client.CreateE2ESession(ctx, ownerHex, r.agentID)
+		session, err := r.multi.CreateE2ESession(ctx, ownerHex, r.agentID)
 		if err != nil {
 			return nil, nil, err
 		}
-		conn, err := e2e.Dial(r.relayAddr, session.SessionID, e2e.RolePeer, r.agentID)
+		conn, err := e2e.Dial(relayAddr, session.SessionID, e2e.RolePeer, r.agentID)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -192,8 +208,31 @@ func (r routerReaderKeys) ReaderKey(ctx context.Context, ownerKeyID [16]byte, mo
 		return e2e.PeerReceive(conn)
 	}
 
-	m, err := r.client.ReaderKey(ctx, ownerHex)
+	m, err := r.multi.ReaderKey(ctx, ownerHex)
 	return m.ReaderKey, m.PubSig, err
+}
+
+// relayFor picks the relay for the last healthy server index, falling
+// back to the first configured relay.
+func relayFor(relays []string, index int) string {
+	if index >= 0 && index < len(relays) {
+		return relays[index]
+	}
+	if len(relays) > 0 {
+		return relays[0]
+	}
+	return ""
+}
+
+// splitCSV splits a comma-separated list into trimmed non-empty entries.
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // prepareMountPoint makes sure the mount point directory exists.

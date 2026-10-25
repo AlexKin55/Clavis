@@ -82,6 +82,18 @@ end-to-end tests (real mounts, HTTP servers, relay exchanges) are kept
 separately in [`tests/`](tests/) with a mirrored directory structure and
 use only the public API.
 
+## Multi-server failover
+
+`server.url` accepts several Key Server addresses separated by commas
+(e.g. `https://ks1.example.com,https://ks2.example.com`). The agent:
+
+- registers a **reader key (AS) per server** during identity registration
+  (each server gets its own S/nonce-derived AS);
+- on every operation (issue, reader-key, e2e session) tries the servers
+  in order and uses the **first healthy one**;
+- skips unreachable servers at registration and retries them on the next
+  start — the rest of the list keeps the agent working.
+
 ## Benchmarks
 
 ```bash
@@ -141,9 +153,10 @@ sample in [`settings.yaml`](settings.yaml). Key parameters:
 | `policy.allow_uid0` | allow root without further checks |
 | `policy.allow_firejail` | allow Firejail-sandboxed processes |
 | `policy.whitelist` | sanctioned executable names (e.g. `["libreoffice"]`) |
-| `server.url` | Key Server base URL (mTLS); empty = local key file |
+| `server.url` | Key Server URLs, comma separated (failover order) |
 | `server.ca_file` / `cert_file` / `key_file` | mTLS credentials |
 | `server.timeout_seconds` | Key Server request timeout |
+| `server.relay_addr` | e2e relay addresses, comma separated |
 | `token.module_path` | PKCS#11 module (token becomes the key source) |
 | `token.token_label` / `pin` / `wrap_key_label` | token session settings |
 | `token.generate_wrap_key` | create the wrapping key on first use |
