@@ -195,9 +195,23 @@ sudo ./deploy/install.sh --with-keyserver  # agent + Key Server
 
 ## Distribution packages (rpm / deb)
 
-Native packages for **Debian/Ubuntu (`.deb`)** and **Fedora/RHEL/openSUSE
-(`.rpm`)** are generated with [nfpm](https://nfpm.goreleaser.com):
-one package per component — agent, Key Server, PostgreSQL setup.
+Native packages are generated with [nfpm](https://nfpm.goreleaser.com):
+one package per component — agent, Key Server, PostgreSQL setup. The
+`.deb` packages target Debian-based systems; `.rpm` packages are built
+**separately per distribution family** because dependency package names
+differ (`Mesa-libGL` on openSUSE vs `mesa-libGL` on Fedora, etc.).
+
+| Format | Distribution family | Produced by | Where the target is written |
+|---|---|---|---|
+| `.deb` | Debian 11/12, Ubuntu 22.04/24.04, Linux Mint, Kali | `packaging/clavis-*.deb.yaml` | config header + `README` |
+| `.rpm` (opensuse) | openSUSE Leap 15.x / Tumbleweed | `packaging/clavis-*.opensuse.rpm.yaml` | config header `(RPM, openSUSE)` |
+| `.rpm` (fedora) | Fedora 38+/39, RHEL/Rocky/AlmaLinux 9 | `packaging/clavis-*.fedora.rpm.yaml` | config header `(RPM, Fedora/RHEL-like)` |
+
+Only safe, non-versioned dependencies are hard (`fuse3`, `postgresql`,
+`ca-certificates`); GUI/server runtimes that differ in name per
+distribution are declared as `Recommends` with per-family names, so the
+packages install everywhere and the optional GUI gets its libraries
+pulled where the names match.
 
 Components:
 
@@ -212,8 +226,8 @@ Build locally (no Debian/Fedora needed):
 ```bash
 go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 ./packaging/build.sh 0.1.0
-# → dist/clavis-{agent,server,postgres}_{0.1.0}-1.x86_64.rpm  (RPM family)
-# → dist/clavis-{agent,server,postgres}_0.1.0_amd64.deb       (Debian/Ubuntu)
+# → dist/clavis-{agent,server,postgres}_0.1.0_amd64.deb                      (Debian/Ubuntu)
+# → dist/clavis-{agent,server,postgres}-0.1.0-1.{opensuse,fedora}.x86_64.rpm (RPM per family)
 ```
 
 Install:
@@ -223,8 +237,11 @@ Install:
 sudo dpkg -i dist/clavis-agent_0.1.0_amd64.deb
 sudo apt-get install -f   # resolve optional libgl/wayland deps for the GUI
 
-# Fedora/RHEL/openSUSE
-sudo zypper in dist/clavis-agent-0.1.0-1.x86_64.rpm
+# Fedora/RHEL-like
+sudo dnf install dist/clavis-agent-0.1.0-1.fedora.x86_64.rpm
+
+# openSUSE
+sudo zypper in dist/clavis-agent-0.1.0-1.opensuse.x86_64.rpm
 
 # PostgreSQL: start the distribution service, then apply the schema
 sudo systemctl start postgresql

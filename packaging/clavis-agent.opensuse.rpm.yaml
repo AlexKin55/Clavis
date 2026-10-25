@@ -1,5 +1,4 @@
-# nfpm configuration for the Clavis agent package (RPM family:
-# Fedora/RHEL/openSUSE).
+# nfpm configuration for the Clavis agent package (RPM, openSUSE).
 name: clavis-agent
 arch: amd64
 platform: linux
@@ -17,14 +16,15 @@ description: |
 homepage: https://github.com/AlexKin55/Clavis
 license: Proprietary
 
+# Only fuse3 is a hard dependency (GUI libs are Recommends: openSUSE names).
 depends:
   - fuse3
+recommends:
+  - dbus-1
   - Mesa-libGL
   - Mesa-libEGL
   - libwayland-client1
   - libxkbcommon0
-recommends:
-  - dbus-1
 
 contents:
   - src: packaging/stage/agent/clavis-agent

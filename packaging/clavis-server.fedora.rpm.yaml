@@ -1,4 +1,4 @@
-# nfpm configuration for the Clavis Key Server package (RPM family).
+# nfpm configuration for the Clavis Key Server package (RPM, Fedora/RHEL-like).
 name: clavis-server
 arch: amd64
 platform: linux

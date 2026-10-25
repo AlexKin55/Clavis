@@ -1,0 +1,41 @@
+# nfpm configuration for the Clavis Key Server package (RPM, openSUSE).
+name: clavis-server
+arch: amd64
+platform: linux
+version: "0.1.0"
+version_schema: semver
+release: "1"
+section: net
+priority: optional
+maintainer: Clavis Project <maintainers@clavis.local>
+description: |
+  Clavis Key Server: central key issuance, revocation, policy management
+  and the audit trail. Shares a PostgreSQL database across instances and
+  runs an optional e2e relay for direct key exchange between agents.
+homepage: https://github.com/AlexKin55/Clavis
+license: Proprietary
+
+depends:
+  - ca-certificates
+recommends:
+  - postgresql-server
+
+contents:
+  - src: packaging/stage/server/clavis-server
+    dst: /usr/bin/clavis-server
+  - src: packaging/stage/common/server.yaml
+    dst: /etc/clavis/server.yaml
+    type: config|noreplace
+  - src: packaging/systemd/clavis-keyserver.service
+    dst: /usr/lib/systemd/system/clavis-keyserver.service
+  - src: packaging/scripts/server.postinstall
+    dst: /usr/lib/clavis/server.postinstall
+  - src: packaging/scripts/server.postremove
+    dst: /usr/lib/clavis/server.postremove
+
+scripts:
+  postinstall: packaging/scripts/server.postinstall
+  postremove: packaging/scripts/server.postremove
+
+rpm:
+  group: Applications/System

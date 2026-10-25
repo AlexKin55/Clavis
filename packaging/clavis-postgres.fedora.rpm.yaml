@@ -1,6 +1,4 @@
-# nfpm configuration for the Clavis PostgreSQL setup package (RPM family).
-# Note: on openSUSE the server package may be named postgresql16-server
-# etc.; adjust `depends` if the default name does not exist.
+# nfpm configuration for the Clavis PostgreSQL setup (RPM, Fedora/RHEL-like).
 name: clavis-postgres
 arch: amd64
 platform: linux
@@ -18,8 +16,9 @@ homepage: https://github.com/AlexKin55/Clavis
 license: Proprietary
 
 depends:
-  - postgresql-server
   - postgresql
+recommends:
+  - postgresql-server
 
 contents:
   - src: postgres/schema.sql
