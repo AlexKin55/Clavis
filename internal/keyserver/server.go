@@ -6,8 +6,12 @@
 package keyserver
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -24,21 +28,24 @@ type Config struct {
 	DefaultPolicies keyclient.Policies
 	// DefaultTTL bounds the issued keys unless overridden per document.
 	DefaultTTL time.Duration
+	// ServerKey is the server's public Ed25519 key handed out to agents
+	// during registration (used as the S input for reader-key derivation).
+	ServerKey ed25519.PublicKey
 }
 
 // Server is the Key Server HTTP handler.
 type Server struct {
-	store *Store
+	store Store
 	cfg   Config
 }
 
 // NewServer creates the Key Server handler.
-func NewServer(cfg Config, store *Store) *Server {
+func NewServer(cfg Config, store Store) *Server {
 	if cfg.DefaultTTL <= 0 {
 		cfg.DefaultTTL = time.Hour
 	}
 	if store == nil {
-		store = NewStore()
+		store = NewMemoryStore()
 	}
 	return &Server{store: store, cfg: cfg}
 }
@@ -55,6 +62,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/audit", s.handleAudit)
 	mux.HandleFunc("POST /api/v1/agents/register", s.handleRegisterAgent)
 	mux.HandleFunc("POST /api/v1/agents/revoke", s.handleRevokeAgent)
+
+	// v2 registration and reader-key API.
+	mux.HandleFunc("POST /api/v1/agents/reader-key", s.handleSetReaderKey)
+	mux.HandleFunc("GET /api/v1/agents/{owner_key_id}/reader-key", s.handleGetReaderKey)
 
 	return mux
 }
@@ -220,17 +231,140 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 }
 
 type registerAgentRequest struct {
-	AgentID string `json:"agent_id"`
+	DeviceID string `json:"device_id"`
+	PubSig   []byte `json:"pub_sig"`
+}
+
+type registerAgentResponse struct {
+	AgentID         string `json:"agent_id"`
+	PublicKeyServer string `json:"public_key_server"`
+	NonceServer     string `json:"nonce_server"`
 }
 
 func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	var req registerAgentRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentID == "" {
-		writeError(w, http.StatusBadRequest, "agent_id is required")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	s.store.EnsureAgent(req.AgentID)
-	writeJSON(w, http.StatusOK, map[string]bool{"registered": true})
+	if len(req.PubSig) != ed25519.PublicKeySize {
+		writeError(w, http.StatusBadRequest, "invalid pub_sig length")
+		return
+	}
+	if len(s.cfg.ServerKey) != ed25519.PublicKeySize {
+		writeError(w, http.StatusInternalServerError, "server key not configured")
+		return
+	}
+
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		writeError(w, http.StatusInternalServerError, "nonce generation failed")
+		return
+	}
+	owner := sha256.Sum256(req.PubSig)
+	ownerKeyID := hex.EncodeToString(owner[:16])
+	agentID := newAgentID()
+
+	if err := s.store.RegisterAgent(AgentRecord{
+		AgentID:     agentID,
+		DeviceID:    req.DeviceID,
+		PubSig:      req.PubSig,
+		OwnerKeyID:  ownerKeyID,
+		NonceServer: nonce,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.store.AddAudit(AuditEntry{
+		Time: time.Now(), AgentID: agentID,
+		Document: "-", Allowed: true, Reason: "agent registered",
+	})
+
+	writeJSON(w, http.StatusOK, registerAgentResponse{
+		AgentID:         agentID,
+		PublicKeyServer: hex.EncodeToString(s.cfg.ServerKey),
+		NonceServer:     hex.EncodeToString(nonce),
+	})
+}
+
+type setReaderKeyRequest struct {
+	AgentID   string `json:"agent_id"`
+	ReaderKey []byte `json:"reader_key"`
+}
+
+func (s *Server) handleSetReaderKey(w http.ResponseWriter, r *http.Request) {
+	var req setReaderKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	rec, ok := s.store.AgentByID(req.AgentID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	if len(req.ReaderKey) < 16 {
+		writeError(w, http.StatusBadRequest, "reader_key too short")
+		return
+	}
+	if err := s.store.SetReaderKey(rec.OwnerKeyID, req.ReaderKey); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.store.AddAudit(AuditEntry{
+		Time: time.Now(), AgentID: req.AgentID,
+		Document: "-", Allowed: true, Reason: "reader key registered",
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"stored": true})
+}
+
+func (s *Server) handleGetReaderKey(w http.ResponseWriter, r *http.Request) {
+	ownerKeyID := r.PathValue("owner_key_id")
+	if ownerKeyID == "" {
+		writeError(w, http.StatusBadRequest, "owner_key_id is required")
+		return
+	}
+
+	rec, ok := s.store.AgentByOwnerKeyID(ownerKeyID)
+	if !ok {
+		s.store.AddAudit(AuditEntry{
+			Time: time.Now(), AgentID: agentIDFromRequest(r),
+			Document: ownerKeyID, Allowed: false, Reason: "owner not found",
+		})
+		writeError(w, http.StatusNotFound, "owner not found")
+		return
+	}
+	if rec.Revoked {
+		s.store.AddAudit(AuditEntry{
+			Time: time.Now(), AgentID: agentIDFromRequest(r),
+			Document: ownerKeyID, Allowed: false, Reason: "owner agent revoked",
+		})
+		writeError(w, http.StatusForbidden, "agent revoked")
+		return
+	}
+	if len(rec.ReaderKey) == 0 {
+		s.store.AddAudit(AuditEntry{
+			Time: time.Now(), AgentID: agentIDFromRequest(r),
+			Document: ownerKeyID, Allowed: false, Reason: "reader key not registered",
+		})
+		writeError(w, http.StatusNotFound, "reader key not registered")
+		return
+	}
+
+	s.store.AddAudit(AuditEntry{
+		Time: time.Now(), AgentID: agentIDFromRequest(r),
+		Document: ownerKeyID, Allowed: true, Reason: "reader key issued",
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"reader_key": hex.EncodeToString(rec.ReaderKey)})
+}
+
+// newAgentID returns a server-assigned agent identifier.
+func newAgentID() string {
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("ag-%x", buf) // best effort
+	}
+	return "ag-" + hex.EncodeToString(buf)
 }
 
 type revokeAgentRequest struct {

@@ -8,6 +8,13 @@ listen: "127.0.0.1:8443"
 # Default key lifetime granted on first issuance (seconds).
 default_ttl_seconds: 3600
 
+# PostgreSQL connection (agents + audit). Empty uses the in-memory store.
+db_url: ""
+
+# Server Ed25519 seed file (created on first run, 0600). Its public key S
+# participates in the reader-key (AS) derivation during registration.
+signing_key_file: "/var/lib/clavis/server-key.seed"
+
 tls:
   # Server certificate and private key. Leave empty to serve plain HTTP
   # (localhost/testing only).

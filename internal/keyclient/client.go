@@ -18,6 +18,14 @@ import (
 // issuePath is the Key Server endpoint for key issuance.
 const issuePath = "/api/v1/keys/issue"
 
+// v2 API paths.
+const (
+	registerPath     = "/api/v1/agents/register"
+	setReaderKeyPath = "/api/v1/agents/reader-key"
+	readerKeyPrefix  = "/api/v1/agents/"
+	readerKeySuffix  = "/reader-key"
+)
+
 // Client talks to the Key Server over TLS/mTLS.
 type Client struct {
 	baseURL string
@@ -123,6 +131,104 @@ func (c *Client) IssueKey(ctx context.Context, req IssueRequest) (*IssueResponse
 		return nil, err
 	}
 	return &out, nil
+}
+
+// Register performs the v2 agent registration and returns the server
+// public key S and the registration nonce.
+func (c *Client) Register(ctx context.Context, req RegisterRequest) (*RegisterResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: marshal registration: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+registerPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: build registration: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.agentID != "" {
+		httpReq.Header.Set("X-Agent-ID", c.agentID)
+	}
+
+	resp, err := c.httpc.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: registration failed: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return nil, newServerError(resp.StatusCode, resp.Body)
+	}
+
+	var out RegisterResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("keyclient: decode registration: %w", err)
+	}
+	return &out, nil
+}
+
+// SetReaderKey stores the agent's reader key (AS) on the server.
+func (c *Client) SetReaderKey(ctx context.Context, req SetReaderKeyRequest) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("keyclient: marshal reader key: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+setReaderKeyPath, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("keyclient: build reader key request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.agentID != "" {
+		httpReq.Header.Set("X-Agent-ID", c.agentID)
+	}
+
+	resp, err := c.httpc.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("keyclient: set reader key failed: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return newServerError(resp.StatusCode, resp.Body)
+	}
+	return nil
+}
+
+// ReaderKey requests the read-only wrapper key (AS) of the document owner.
+func (c *Client) ReaderKey(ctx context.Context, ownerKeyID string) ([]byte, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+readerKeyPrefix+ownerKeyID+readerKeySuffix, nil)
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: build reader key request: %w", err)
+	}
+	if c.agentID != "" {
+		httpReq.Header.Set("X-Agent-ID", c.agentID)
+	}
+
+	resp, err := c.httpc.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: reader key request failed: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return nil, newServerError(resp.StatusCode, resp.Body)
+	}
+
+	var out struct {
+		ReaderKey string `json:"reader_key"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("keyclient: decode reader key: %w", err)
+	}
+	key, err := hex.DecodeString(out.ReaderKey)
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: invalid reader key encoding: %w", err)
+	}
+	return key, nil
 }
 
 // serverError is a non-OK Key Server response.

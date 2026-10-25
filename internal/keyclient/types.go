@@ -91,3 +91,26 @@ type IssueResponse struct {
 	TTLSeconds int64    `json:"ttl_seconds"`
 	Policies   Policies `json:"policies"`
 }
+
+// RegisterRequest is the v2 agent registration body.
+type RegisterRequest struct {
+	// DeviceID identifies the installed device.
+	DeviceID string `json:"device_id"`
+	// PubSig is the agent's public Ed25519 signature key.
+	PubSig []byte `json:"pub_sig"`
+}
+
+// RegisterResponse is the answer to registration: the agent ID, the
+// server public key S and the per-agent registration nonce. Together they
+// let the agent derive its reader key AS.
+type RegisterResponse struct {
+	AgentID         string `json:"agent_id"`
+	PublicKeyServer string `json:"public_key_server"`
+	NonceServer     string `json:"nonce_server"`
+}
+
+// SetReaderKeyRequest registers the agent's reader key AS.
+type SetReaderKeyRequest struct {
+	AgentID   string `json:"agent_id"`
+	ReaderKey []byte `json:"reader_key"`
+}

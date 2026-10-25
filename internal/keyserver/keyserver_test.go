@@ -3,22 +3,34 @@ package keyserver
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/clavis/clavis/internal/crypto"
 	"github.com/clavis/clavis/internal/keyclient"
 )
 
 const testAgent = "agent-001"
 
+func serverPubKey() ed25519.PublicKey {
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(i)
+	}
+	return ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+}
+
 func newTestServer() *Server {
 	return NewServer(Config{
 		DefaultPolicies: keyclient.Policies{ReadWrite: true},
 		DefaultTTL:      time.Hour,
-	}, NewStore())
+		ServerKey:       serverPubKey(),
+	}, NewMemoryStore())
 }
 
 func doJSON(t *testing.T, srv *httptest.Server, method, path, agentID string, body any) (*http.Response, []byte) {
@@ -213,6 +225,110 @@ func TestHealth(t *testing.T) {
 }
 
 // TestE2EWithClient exercises the full loop with the real keyclient.Getter.
+// TestV2AgentRegistrationAndReaderKey covers the whole v2 registration
+// flow: register -> derive AS -> store AS -> retrieve AS by owner key id.
+func TestV2AgentRegistrationAndReaderKey(t *testing.T) {
+	srv := httptest.NewServer(newTestServer().Handler())
+	defer srv.Close()
+
+	client := keyclient.NewClient(srv.URL, nil, time.Second)
+	ctx := context.Background()
+
+	identity, err := crypto.NewAgentIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reg, err := client.Register(ctx, keyclient.RegisterRequest{
+		DeviceID: "dev-a",
+		PubSig:   identity.PublicSignatureKey(),
+	})
+	if err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+	if reg.AgentID == "" {
+		t.Error("agent id is empty")
+	}
+	pubServer, err := hex.DecodeString(reg.PublicKeyServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonceServer, err := hex.DecodeString(reg.NonceServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	asA, err := identity.ReaderKey(pubServer, nonceServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Store AS on the server.
+	if err := client.SetReaderKey(ctx, keyclient.SetReaderKeyRequest{
+		AgentID:   reg.AgentID,
+		ReaderKey: asA,
+	}); err != nil {
+		t.Fatalf("SetReaderKey() error: %v", err)
+	}
+
+	// Anyone may fetch the read-only reader key by owner key id.
+	owner := identity.OwnerKeyID()
+	ownerKeyHex := hex.EncodeToString(owner[:])
+	got, err := client.ReaderKey(ctx, ownerKeyHex)
+	if err != nil {
+		t.Fatalf("ReaderKey() error: %v", err)
+	}
+	if !bytes.Equal(got, asA) {
+		t.Error("reader key round trip mismatch")
+	}
+
+	// Unknown owners are not found.
+	if _, err := client.ReaderKey(ctx, "00000000000000000000000000000000"); err == nil {
+		t.Error("ReaderKey(unknown owner) error = nil, want an error")
+	}
+
+	// Revoking the agent blocks further reader-key issuance.
+	doJSON(t, srv, http.MethodPost, "/api/v1/agents/revoke", "", map[string]string{"agent_id": reg.AgentID})
+	if _, err := client.ReaderKey(ctx, ownerKeyHex); err == nil {
+		t.Error("ReaderKey() after revoke error = nil, want an error")
+	}
+}
+
+// TestV2MemoryStoreCore verifies the store-level registration primitives.
+func TestV2MemoryStoreCore(t *testing.T) {
+	store := NewMemoryStore()
+
+	rec := AgentRecord{
+		AgentID:     "ag-1",
+		DeviceID:    "dev-1",
+		PubSig:      []byte{1, 2, 3},
+		OwnerKeyID:  "owner-1",
+		NonceServer: []byte{4, 5, 6},
+	}
+	if err := store.RegisterAgent(rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetReaderKey("owner-1", []byte{0xAA, 0xBB}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := store.AgentByOwnerKeyID("owner-1")
+	if !ok {
+		t.Fatal("agent by owner not found")
+	}
+	if string(got.ReaderKey) != string([]byte{0xAA, 0xBB}) {
+		t.Errorf("reader key mismatch: %x", got.ReaderKey)
+	}
+
+	if err := store.SetReaderKey("nobody", []byte{1}); err == nil {
+		t.Error("SetReaderKey(unknown owner) error = nil, want an error")
+	}
+
+	store.RevokeAgent("ag-1")
+	if !store.AgentRevoked("ag-1") {
+		t.Error("revoked flag not set")
+	}
+}
+
 func TestE2EWithClient(t *testing.T) {
 	srv := httptest.NewServer(newTestServer().Handler())
 	defer srv.Close()

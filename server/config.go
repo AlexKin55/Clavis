@@ -14,8 +14,14 @@ type Config struct {
 	Listen string `yaml:"listen"`
 	// DefaultTTLSeconds is the key lifetime granted on first issuance.
 	DefaultTTLSeconds int `yaml:"default_ttl_seconds"`
+	// DBURL, when set, enables the PostgreSQL store (agents + audit).
+	DBURL string `yaml:"db_url"`
 	// TLS enables mutual TLS (agent client certificates enforced).
 	TLS TLSConfig `yaml:"tls"`
+	// SigningKeyFile is the path to the 32-byte seed of the server's
+	// Ed25519 key S (created on first run). Its public part and the
+	// registration nonce are handed to agents (reader-key derivation).
+	SigningKeyFile string `yaml:"signing_key_file"`
 }
 
 // TLSConfig holds TLS/mTLS settings.
