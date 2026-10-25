@@ -20,6 +20,7 @@ import (
 	"github.com/clavis/clavis/internal/interceptor"
 	"github.com/clavis/clavis/internal/keyclient"
 	"github.com/clavis/clavis/internal/logging"
+	"github.com/clavis/clavis/internal/token"
 	"github.com/clavis/clavis/internal/version"
 )
 
@@ -69,6 +70,22 @@ func Run(ctx context.Context, cfgPath string) error {
 		client.SetAgentID(cfg.Agent.ID)
 		keyGetter = keyclient.NewGetter(client, keyclient.NewCache())
 		logger.Info("using key server", "url", cfg.Server.URL)
+	} else if cfg.Token.ModulePath != "" {
+		backend, err := token.Open(token.Config{
+			ModulePath:      cfg.Token.ModulePath,
+			TokenLabel:      cfg.Token.TokenLabel,
+			PIN:             cfg.Token.PIN,
+			WrapKeyLabel:    cfg.Token.WrapKeyLabel,
+			GenerateWrapKey: cfg.Token.GenerateWrapKey,
+		})
+		if err != nil {
+			return fmt.Errorf("token: %w", err)
+		}
+		defer func() {
+			_ = backend.Close()
+		}()
+		keyGetter = token.NewGetter(backend, cfg.Token.BlobsDir)
+		logger.Info("using hardware token", "module", cfg.Token.ModulePath)
 	}
 
 	policy := interceptor.NewPolicy(interceptor.Config{

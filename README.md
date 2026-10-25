@@ -25,6 +25,7 @@ clavis/
 │   ├── logging/            # slog + rotation (lumberjack)
 │   ├── sandbox/            # Firejail sandbox (net/print/sound lockdown)
 │   ├── subject/            # calling process identity from /proc
+│   ├── token/              # PKCS#11 hardware token (wrapped document keys)
 │   └── version/            # build version (ldflags)
 ├── scripts/                # helper scripts
 ├── tests/                  # e2e tests (to be added)
@@ -84,6 +85,10 @@ sample in [`settings.yaml`](settings.yaml). Key parameters:
 | `server.url` | Key Server base URL (mTLS); empty = local key file |
 | `server.ca_file` / `cert_file` / `key_file` | mTLS credentials |
 | `server.timeout_seconds` | Key Server request timeout |
+| `token.module_path` | PKCS#11 module (token becomes the key source) |
+| `token.token_label` / `pin` / `wrap_key_label` | token session settings |
+| `token.generate_wrap_key` | create the wrapping key on first use |
+| `token.blobs_dir` | storage of token-wrapped document keys |
 | `fuse.directory` | directory of the encrypted files (must exist) |
 | `fuse.mount_point` | mount point (created automatically) |
 | `fuse.options` | FUSE arguments |

@@ -20,6 +20,7 @@ type Config struct {
 	Log    LogConfig    `yaml:"log"`
 	Policy PolicyConfig `yaml:"policy"`
 	Server ServerConfig `yaml:"server"`
+	Token  TokenConfig  `yaml:"token"`
 }
 
 // AgentConfig holds agent identity and service parameters.
@@ -60,6 +61,24 @@ type PolicyConfig struct {
 	// Whitelist lists executable names (/proc/<pid>/comm) allowed to open
 	// protected documents directly.
 	Whitelist []string `yaml:"whitelist"`
+}
+
+// TokenConfig holds the PKCS#11 hardware token settings. When module_path
+// is set (and server.url is empty), the token becomes the source of key
+// material: documents are unreachable without it.
+type TokenConfig struct {
+	// ModulePath is the PKCS#11 module (e.g. libsofthsm2.so).
+	ModulePath string `yaml:"module_path"`
+	// TokenLabel selects the token.
+	TokenLabel string `yaml:"token_label"`
+	// PIN unlocks the token session.
+	PIN string `yaml:"pin"`
+	// WrapKeyLabel is the CKA_LABEL of the master wrapping key.
+	WrapKeyLabel string `yaml:"wrap_key_label"`
+	// GenerateWrapKey creates the wrapping key on first use.
+	GenerateWrapKey bool `yaml:"generate_wrap_key"`
+	// BlobsDir stores the token-wrapped document keys.
+	BlobsDir string `yaml:"blobs_dir"`
 }
 
 // ServerConfig holds the Key Server connection settings. An empty URL
@@ -121,6 +140,10 @@ func Default() *Config {
 		},
 		Server: ServerConfig{
 			TimeoutSeconds: 10,
+		},
+		Token: TokenConfig{
+			WrapKeyLabel: "clavis-wrap",
+			BlobsDir:     "/var/lib/clavis/tokens",
 		},
 	}
 }

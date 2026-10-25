@@ -22,6 +22,17 @@ policy:
   # Executable names (/proc/<pid>/comm) allowed to open protected documents.
   whitelist: []
 
+token:
+  # PKCS#11 hardware token. When module_path is set (and server.url is
+  # empty), the token becomes the only source of key material: documents
+  # are unreachable without the token/pin.
+  module_path: ""
+  token_label: "Clavis"
+  pin: "0000"
+  wrap_key_label: "clavis-wrap"
+  generate_wrap_key: true
+  blobs_dir: "/var/lib/clavis/tokens"
+
 server:
   # Key Server URL; empty disables the server and uses the local key file.
   url: ""
