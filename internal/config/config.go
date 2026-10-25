@@ -30,6 +30,9 @@ type AgentConfig struct {
 	// HealthListen is the address of the HTTP /healthz endpoint
 	// (e.g. "127.0.0.1:8901"). An empty string disables the health server.
 	HealthListen string `yaml:"health_listen"`
+	// UIListen is the localhost address of the desktop GUI API
+	// (mode selection, e2e approval). Empty disables it.
+	UIListen string `yaml:"ui_listen"`
 }
 
 // CryptoConfig holds cryptographic settings.
@@ -126,6 +129,7 @@ func Default() *Config {
 		Agent: AgentConfig{
 			ID:           "clavis-001",
 			HealthListen: "127.0.0.1:8901",
+			UIListen:     "127.0.0.1:8902",
 		},
 		Crypto: CryptoConfig{
 			KeyFile:   "",

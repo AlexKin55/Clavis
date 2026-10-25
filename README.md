@@ -127,6 +127,28 @@ openings read the key from the cache first, so documents keep working
 - skips unreachable servers at registration and retries them on the next
   start — the rest of the list keeps the agent working.
 
+## Desktop GUI (Fyne)
+
+The optional desktop panel [`gui/`](gui/) lets the user:
+
+- pick the **sharing mode for new documents** (Proxy / End-to-end); the
+  FUSE agent reads the same preference for every created file;
+- check for **end-to-end access requests** and answer with a modal dialog
+  ("give the decryption key or refuse"); approval is performed by the
+  agent (holder of the identity) via its localhost API (`agent.ui_listen`).
+
+Because Fyne needs CGO and system graphics headers (libgl1-mesa-dev,
+libwayland-dev on Linux; mingw on Windows), the GUI is built with an
+explicit tag:
+
+```bash
+go build -tags gui -o bin/clavis-gui ./gui
+./bin/clavis-gui                       # connects to 127.0.0.1:8902
+```
+
+The tag keeps `go build ./...` and the test suite free of the GUI
+toolchain.
+
 ## Benchmarks
 
 ```bash
@@ -181,6 +203,7 @@ sample in [`settings.yaml`](settings.yaml). Key parameters:
 |---|---|
 | `agent.id` | unique agent ID |
 | `agent.health_listen` | HTTP `/healthz` address (empty disables it) |
+| `agent.ui_listen` | localhost GUI API address (mode, e2e approval) |
 | `crypto.key_file` | local key material file (hex or raw 16/24/32 bytes) |
 | `crypto.algorithm` | default algorithm for new documents |
 | `crypto.local_cache_db` | SQLite path for cached reader keys (offline access) |

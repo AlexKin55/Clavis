@@ -91,6 +91,7 @@ type Store interface {
 	// --- e2e sessions ---
 	CreateE2ESession(ownerKeyID, peerAgentID string) (E2ESession, error)
 	GetE2ESession(sessionID string) (E2ESession, bool)
+	GetE2ESessionsByOwner(ownerKeyID string) []E2ESession
 
 	// --- peer health (cluster coordination) ---
 	RecordPeerStatus(peer string, alive bool)
@@ -305,6 +306,20 @@ func (s *MemoryStore) GetE2ESession(sessionID string) (E2ESession, bool) {
 		return E2ESession{}, false
 	}
 	return *session, true
+}
+
+// GetE2ESessionsByOwner returns all rendezvous awaiting the owner.
+func (s *MemoryStore) GetE2ESessionsByOwner(ownerKeyID string) []E2ESession {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []E2ESession
+	for _, session := range s.e2e {
+		if session.OwnerKeyID == ownerKeyID {
+			out = append(out, *session)
+		}
+	}
+	return out
 }
 
 // RecordPeerStatus stores the latest observed health of a peer.

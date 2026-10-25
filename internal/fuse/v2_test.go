@@ -334,6 +334,41 @@ func TestV2ReadOnlyDoesNotChangeOwner(t *testing.T) {
 	}
 }
 
+// TestV2ModeProvider verifies that the GUI-selected mode is applied to
+// newly created documents.
+func TestV2ModeProvider(t *testing.T) {
+	owner, serverPub, serverNonce := v2Fixture(t)
+	sourceDir := t.TempDir()
+
+	root := NewSecureRoot(&Config{
+		SourceDir:    sourceDir,
+		KeyGetter:    crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),
+		Identity:     owner,
+		ServerPub:    serverPub,
+		ServerNonce:  serverNonce,
+		ModeProvider: func() crypto.Mode { return crypto.ModeE2E },
+	})
+
+	path := filepath.Join(sourceDir, "mode.txt")
+	f, err := root.createProtectedFile(context.Background(), path, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Release(context.Background())
+
+	physical, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, err := crypto.ParseHeaderV2(physical[:crypto.HeaderV2Size])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.Mode != crypto.ModeE2E {
+		t.Errorf("Mode = %d, want ModeE2E (from ModeProvider)", header.Mode)
+	}
+}
+
 // TestV2UnknownOwner verifies that a document whose owner is unknown to the
 // provider cannot be opened.
 func TestV2UnknownOwner(t *testing.T) {

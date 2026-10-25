@@ -69,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 
 	// e2e rendezvous.
 	mux.HandleFunc("POST /api/v1/e2e/sessions", s.handleCreateE2ESession)
+	mux.HandleFunc("GET /api/v1/e2e/pending", s.handlePendingE2ESessions)
 
 	return mux
 }
@@ -364,6 +365,25 @@ func (s *Server) handleGetReaderKey(w http.ResponseWriter, r *http.Request) {
 		"reader_key": hex.EncodeToString(rec.ReaderKey),
 		"pub_sig":    hex.EncodeToString(rec.PubSig),
 	})
+}
+
+// handlePendingE2ESessions returns sessions awaiting the given owner.
+func (s *Server) handlePendingE2ESessions(w http.ResponseWriter, r *http.Request) {
+	owner := r.URL.Query().Get("owner_key_id")
+	if owner == "" {
+		writeError(w, http.StatusBadRequest, "owner_key_id is required")
+		return
+	}
+	type pendingView struct {
+		SessionID string `json:"session_id"`
+		PeerAgent string `json:"peer_agent_id"`
+	}
+	sessions := s.store.GetE2ESessionsByOwner(owner)
+	out := make([]pendingView, 0, len(sessions))
+	for _, s := range sessions {
+		out = append(out, pendingView{SessionID: s.SessionID, PeerAgent: s.PeerAgentID})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pending": out})
 }
 
 // handleCreateE2ESession creates a rendezvous for the direct key exchange.

@@ -36,8 +36,12 @@ type Config struct {
 	Identity    *crypto.AgentIdentity
 	ServerPub   []byte
 	ServerNonce []byte
-	// DefaultMode is the sharing mode for new documents (Default: proxy).
+	// DefaultMode is the fallback sharing mode for new documents
+	// (Default: proxy). ModeProvider, when set, overrides it at create
+	// time (e.g. from the GUI's user preference).
 	DefaultMode crypto.Mode
+	// ModeProvider returns the current user-selected sharing mode.
+	ModeProvider func() crypto.Mode
 	// ReaderKeys resolves the owner's read-only key material for v2 reads.
 	ReaderKeys ReaderKeyProvider
 }

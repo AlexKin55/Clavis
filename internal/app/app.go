@@ -26,6 +26,7 @@ import (
 	"github.com/clavis/clavis/internal/interceptor"
 	"github.com/clavis/clavis/internal/keyclient"
 	"github.com/clavis/clavis/internal/logging"
+	"github.com/clavis/clavis/internal/mode"
 	"github.com/clavis/clavis/internal/token"
 	"github.com/clavis/clavis/internal/version"
 )
@@ -66,6 +67,8 @@ func Run(ctx context.Context, cfgPath string) error {
 		serverPub   []byte
 		serverNonce []byte
 		readerKeys  fuse.ReaderKeyProvider
+		relays      []string
+		multi       *keyclient.MultiClient
 	)
 	var keyGetter crypto.KeyGetter = crypto.NewFileKeyGetter(cfg.Crypto.KeyFile)
 	if cfg.Server.URL != "" {
@@ -81,7 +84,7 @@ func Run(ctx context.Context, cfgPath string) error {
 		// registers a reader key (AS) per server and fails over to the
 		// next healthy one.
 		urls := splitCSV(cfg.Server.URL)
-		relays := splitCSV(cfg.Server.RelayAddr)
+		relays = splitCSV(cfg.Server.RelayAddr)
 		if len(urls) == 0 {
 			return errors.New("server.url must not be empty")
 		}
@@ -92,7 +95,7 @@ func Run(ctx context.Context, cfgPath string) error {
 			client.SetAgentID(cfg.Agent.ID)
 			clients = append(clients, client)
 		}
-		multi := keyclient.NewMultiClient(clients)
+		multi = keyclient.NewMultiClient(clients)
 		keyGetter = keyclient.NewGetter(multi, keyclient.NewCache())
 
 		// v2: persistent agent identity + registration + reader keys
@@ -157,6 +160,19 @@ func Run(ctx context.Context, cfgPath string) error {
 		logger.Info("using hardware token", "module", cfg.Token.ModulePath)
 	}
 
+	// Sharing mode for new documents, writable from the desktop GUI.
+	modeMgr, _ := mode.Open("")
+	modeProvider := func() crypto.Mode { return modeMgr.Get() }
+
+	if cfg.Agent.UIListen != "" && identity != nil && multi != nil {
+		ui := NewUIServer(cfg.Agent.UIListen, modeMgr, multi, relays, identity, cfg.Agent.ID, logger)
+		if err := ui.Start(); err != nil {
+			logger.Warn("ui server disabled", "error", err)
+		} else {
+			defer ui.Stop()
+		}
+	}
+
 	policy := interceptor.NewPolicy(interceptor.Config{
 		AllowUID0:     cfg.Policy.AllowUID0,
 		AllowFirejail: cfg.Policy.AllowFirejail,
@@ -164,17 +180,18 @@ func Run(ctx context.Context, cfgPath string) error {
 	}, logger.Logger)
 
 	server, err := fuse.Mount(fuse.MountConfig{
-		SourceDir:   cfg.Fuse.Directory,
-		MountPoint:  cfg.Fuse.MountPoint,
-		Options:     cfg.Fuse.Options,
-		KeyGetter:   keyGetter,
-		Interceptor: policy,
-		Logger:      logger.Logger,
-		Identity:    identity,
-		ServerPub:   serverPub,
-		ServerNonce: serverNonce,
-		DefaultMode: crypto.ModeProxy,
-		ReaderKeys:  readerKeys,
+		SourceDir:    cfg.Fuse.Directory,
+		MountPoint:   cfg.Fuse.MountPoint,
+		Options:      cfg.Fuse.Options,
+		KeyGetter:    keyGetter,
+		Interceptor:  policy,
+		Logger:       logger.Logger,
+		Identity:     identity,
+		ServerPub:    serverPub,
+		ServerNonce:  serverNonce,
+		DefaultMode:  crypto.ModeProxy,
+		ModeProvider: modeProvider,
+		ReaderKeys:   readerKeys,
 	})
 	if err != nil {
 		return err

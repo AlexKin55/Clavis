@@ -34,6 +34,9 @@ type MountConfig struct {
 	ServerPub   []byte
 	ServerNonce []byte
 	DefaultMode crypto.Mode
+	// ModeProvider returns the current user-selected sharing mode for new
+	// documents (overrides DefaultMode when set).
+	ModeProvider func() crypto.Mode
 	// ReaderKeys resolves the owner's reader key for v2 documents.
 	ReaderKeys ReaderKeyProvider
 }

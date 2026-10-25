@@ -7,6 +7,8 @@ agent:
   id: "clavis-001"
   # Address of the HTTP /healthz endpoint; empty disables the server.
   health_listen: "127.0.0.1:8901"
+  # Localhost address of the desktop GUI API; empty disables it.
+  ui_listen: "127.0.0.1:8902"
 
 crypto:
   # Path to the file with the key material (hex or raw 16/24/32 bytes).

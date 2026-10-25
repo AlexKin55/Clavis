@@ -147,6 +147,26 @@ func (m *MultiClient) ReaderKey(ctx context.Context, ownerKeyID string) (ReaderM
 	return ReaderMaterial{}, fmt.Errorf("keyclient: all %d servers failed to issue reader key: %w", len(m.clients), lastErr)
 }
 
+// PendingE2ESessions lists rendezvous awaiting the owner from the first
+// server that answers.
+func (m *MultiClient) PendingE2ESessions(ctx context.Context, ownerKeyID string) ([]PendingE2ESession, error) {
+	var lastErr error
+	for i, c := range m.clients {
+		if c == nil {
+			continue
+		}
+		sessions, err := c.PendingE2ESessions(ctx, ownerKeyID)
+		if err == nil {
+			m.mu.Lock()
+			m.lastSuccess = i
+			m.mu.Unlock()
+			return sessions, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("keyclient: all %d servers failed to list pending sessions: %w", len(m.clients), lastErr)
+}
+
 // CreateE2ESession requests a rendezvous from the first server that
 // answers.
 func (m *MultiClient) CreateE2ESession(ctx context.Context, ownerKeyID, peerAgentID string) (*E2ESession, error) {

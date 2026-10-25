@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 )
@@ -211,6 +212,12 @@ type E2ESession struct {
 	PeerAgentID string `json:"peer_agent_id"`
 }
 
+// PendingE2ESession is a rendezvous awaiting the owner's approval.
+type PendingE2ESession struct {
+	SessionID string `json:"session_id"`
+	PeerAgent string `json:"peer_agent_id"`
+}
+
 // ReaderKey requests the read-only wrapper key (AS) and the owner's
 // public signature key.
 func (c *Client) ReaderKey(ctx context.Context, ownerKeyID string) (ReaderMaterial, error) {
@@ -249,6 +256,33 @@ func (c *Client) ReaderKey(ctx context.Context, ownerKeyID string) (ReaderMateri
 		return ReaderMaterial{}, fmt.Errorf("keyclient: invalid pub_sig encoding: %w", err)
 	}
 	return ReaderMaterial{ReaderKey: as, PubSig: pub}, nil
+}
+
+// PendingE2ESessions lists rendezvous awaiting the owner's approval.
+func (c *Client) PendingE2ESessions(ctx context.Context, ownerKeyID string) ([]PendingE2ESession, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/api/v1/e2e/pending?owner_key_id="+url.QueryEscape(ownerKeyID), nil)
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: build pending request: %w", err)
+	}
+	if c.agentID != "" {
+		httpReq.Header.Set("X-Agent-ID", c.agentID)
+	}
+	resp, err := c.httpc.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: pending request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, newServerError(resp.StatusCode, resp.Body)
+	}
+	var out struct {
+		Pending []PendingE2ESession `json:"pending"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("keyclient: decode pending: %w", err)
+	}
+	return out.Pending, nil
 }
 
 // CreateE2ESession asks the Key Server for a rendezvous point for the

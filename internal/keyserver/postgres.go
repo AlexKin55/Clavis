@@ -281,6 +281,29 @@ func (p *PostgresStore) GetE2ESession(sessionID string) (E2ESession, bool) {
 	return s, true
 }
 
+// GetE2ESessionsByOwner returns all rendezvous awaiting the owner.
+func (p *PostgresStore) GetE2ESessionsByOwner(ownerKeyID string) []E2ESession {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx,
+		`SELECT session_id, owner_key_id, peer_agent_id FROM clavis_e2e_sessions WHERE owner_key_id = $1`, ownerKeyID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var out []E2ESession
+	for rows.Next() {
+		var s E2ESession
+		if err := rows.Scan(&s.SessionID, &s.OwnerKeyID, &s.PeerAgentID); err != nil {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // ---------------------------------------------------------------- peers
 
 // RecordPeerStatus stores the latest observed health of a peer.

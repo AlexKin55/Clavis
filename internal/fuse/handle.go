@@ -379,6 +379,9 @@ func (r *SecureRoot) createProtectedFileV2(_ context.Context, path string, mode 
 	copy(wrappedDK[:], wrapped)
 
 	modeFlag := r.cfg.DefaultMode
+	if r.cfg.ModeProvider != nil {
+		modeFlag = r.cfg.ModeProvider()
+	}
 	if modeFlag == 0 {
 		modeFlag = crypto.ModeProxy
 	}
