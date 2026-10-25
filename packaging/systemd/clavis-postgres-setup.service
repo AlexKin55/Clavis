@@ -1,0 +1,17 @@
+# Clavis PostgreSQL setup: one-shot unit that creates the clavis role,
+# the clavis database and applies the shared schema. Requires the
+# distribution's PostgreSQL service to be running.
+
+[Unit]
+Description=Clavis PostgreSQL setup (role, database, schema)
+Documentation=https://github.com/AlexKin55/Clavis
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/clavis/postgres-setup.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

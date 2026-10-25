@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# postinstall for clavis-agent (deb postinst / rpm %post).
+set -e
+
+# System user shared by agent and server services.
+if ! id clavis >/dev/null 2>&1; then
+  useradd --system --home-dir /var/lib/clavis --shell /usr/sbin/nologin clavis 2>/dev/null || true
+fi
+
+mkdir -p /etc/clavis
+
+install -d -m 0750 -o clavis -g clavis /var/lib/clavis /var/lib/clavis/tokens
+install -d -m 0750 -o clavis -g clavis /var/log/clavis
+install -d -m 0750 -o clavis -g clavis /opt/clavis/data
+install -d -m 0750 -o clavis -g clavis /home/clavis-secure
+
+# Local key material for standalone (non-server) setups.
+if [ ! -f /etc/clavis/agent.key ]; then
+  (umask 077; head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /etc/clavis/agent.key)
+fi
+chown clavis:clavis /etc/clavis/agent.key /etc/clavis/settings.yaml 2>/dev/null || true
+chmod 0600 /etc/clavis/agent.key
+chmod 0640 /etc/clavis/settings.yaml 2>/dev/null || true
+
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable clavis-agent.service >/dev/null 2>&1 || true

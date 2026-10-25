@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# postinstall for clavis-postgres (deb postinst / rpm %post).
+set -e
+
+chmod 0600 /etc/clavis/postgres.env 2>/dev/null || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable clavis-postgres-setup.service >/dev/null 2>&1 || true
+
+cat <<'EOF'
+Clavis PostgreSQL setup installed.
+Start the distribution PostgreSQL service and run the one-shot setup:
+
+  systemctl start postgresql  (or: systemctl start postgresql.service)
+  systemctl start clavis-postgres-setup.service
+
+Then point clavis server.yaml at:
+  db_url: "postgres://clavis:clavis@127.0.0.1/clavis"
+EOF

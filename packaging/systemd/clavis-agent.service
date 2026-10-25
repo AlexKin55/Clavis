@@ -1,0 +1,31 @@
+# Clavis agent systemd service (packaged).
+#
+# The agent runs as an unprivileged system user and mounts the secure
+# filesystem with fusermount3 (non-root).
+
+[Unit]
+Description=Clavis transparent document encryption agent
+Documentation=https://github.com/AlexKin55/Clavis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clavis
+Group=clavis
+ExecStart=/usr/bin/clavis-agent -config /etc/clavis/settings.yaml
+ExecStopPost=/usr/bin/fusermount3 -u /home/clavis-secure 2>/dev/null || true
+Restart=on-failure
+RestartSec=3
+UMask=0077
+# Hardening
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+CapabilityBoundingSet=
+AmbientCapabilities=
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

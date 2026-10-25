@@ -193,6 +193,47 @@ sudo ./deploy/install.sh                   # agent only
 sudo ./deploy/install.sh --with-keyserver  # agent + Key Server
 ```
 
+## Distribution packages (rpm / deb)
+
+Native packages for **Debian/Ubuntu (`.deb`)** and **Fedora/RHEL/openSUSE
+(`.rpm`)** are generated with [nfpm](https://nfpm.goreleaser.com):
+one package per component — agent, Key Server, PostgreSQL setup.
+
+Components:
+
+| Package | Contents | Installs |
+|---|---|---|
+| `clavis-agent` | `/usr/bin/clavis-agent`, `/usr/bin/clavis-gui`, `/etc/clavis/settings.yaml`, `clavis-agent.service` | user `clavis`, `/opt/clavis/data`, `/home/clavis-secure` (mount point), key at `/etc/clavis/agent.key` |
+| `clavis-server` | `/usr/bin/clavis-server`, `/etc/clavis/server.yaml`, `clavis-keyserver.service` | user `clavis`, `/var/lib/clavis` (server keys created on first start) |
+| `clavis-postgres` | `/usr/share/clavis/postgres/schema.sql`, `postgres-setup.sh`, `clavis-postgres-setup.service` | creates role `clavis`, database `clavis`, applies the shared schema |
+
+Build locally (no Debian/Fedora needed):
+
+```bash
+go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+./packaging/build.sh 0.1.0
+# → dist/clavis-{agent,server,postgres}_{0.1.0}-1.x86_64.rpm  (RPM family)
+# → dist/clavis-{agent,server,postgres}_0.1.0_amd64.deb       (Debian/Ubuntu)
+```
+
+Install:
+
+```bash
+# Debian/Ubuntu
+sudo dpkg -i dist/clavis-agent_0.1.0_amd64.deb
+sudo apt-get install -f   # resolve optional libgl/wayland deps for the GUI
+
+# Fedora/RHEL/openSUSE
+sudo zypper in dist/clavis-agent-0.1.0-1.x86_64.rpm
+
+# PostgreSQL: start the distribution service, then apply the schema
+sudo systemctl start postgresql
+sudo systemctl start clavis-postgres-setup.service
+```
+
+The agent paths match the packaged systemd units:
+`fuse.mount_point: /home/clavis-secure` (see [`packaging/build.sh`](packaging/build.sh)).
+
 Systemd units: [`clavis-agent.service`](deploy/systemd/clavis-agent.service)
 (mounts the secure FUSE filesystem as the unprivileged `clavis` user) and
 [`clavis-keyserver.service`](deploy/systemd/clavis-keyserver.service).

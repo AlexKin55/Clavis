@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# postremove for clavis-agent (deb postrm / rpm %postun).
+set -e
+
+case "${1:-}" in
+  remove|0)
+    # Full removal: stop and disable. On upgrades ($1=upgrade/1) keep the
+    # service running.
+    systemctl disable --now clavis-agent.service >/dev/null 2>&1 || true
+    ;;
+esac
+systemctl daemon-reload >/dev/null 2>&1 || true
+# The encrypted data (/opt/clavis/data) is intentionally kept.

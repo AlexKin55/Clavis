@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# postremove for clavis-server (deb postrm / rpm %postun).
+set -e
+
+case "${1:-}" in
+  remove|0)
+    systemctl disable --now clavis-keyserver.service >/dev/null 2>&1 || true
+    ;;
+esac
+systemctl daemon-reload >/dev/null 2>&1 || true
+# /var/lib/clavis (server keys) is intentionally kept.

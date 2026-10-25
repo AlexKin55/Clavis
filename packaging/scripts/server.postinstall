@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# postinstall for clavis-server (deb postinst / rpm %post).
+set -e
+
+if ! id clavis >/dev/null 2>&1; then
+  useradd --system --home-dir /var/lib/clavis --shell /usr/sbin/nologin clavis 2>/dev/null || true
+fi
+
+mkdir -p /etc/clavis
+install -d -m 0750 -o clavis -g clavis /var/lib/clavis
+install -d -m 0750 -o clavis -g clavis /var/log/clavis
+chown clavis:clavis /etc/clavis/server.yaml 2>/dev/null || true
+chmod 0640 /etc/clavis/server.yaml 2>/dev/null || true
+
+# The server identity (server-id) and signing key are generated on first
+# start by the server itself (see server/main.go).
+
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable clavis-keyserver.service >/dev/null 2>&1 || true

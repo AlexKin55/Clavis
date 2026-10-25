@@ -1,0 +1,44 @@
+# nfpm configuration for the Clavis PostgreSQL setup package (RPM family).
+# Note: on openSUSE the server package may be named postgresql16-server
+# etc.; adjust `depends` if the default name does not exist.
+name: clavis-postgres
+arch: amd64
+platform: linux
+version: "0.1.0"
+version_schema: semver
+release: "1"
+section: database
+priority: optional
+maintainer: Clavis Project <maintainers@clavis.local>
+description: |
+  Clavis PostgreSQL setup: creates the clavis role and database and
+  applies the shared Clavis schema (agents, documents, e2e sessions,
+  peer state, audit). Uses the distribution's PostgreSQL service.
+homepage: https://github.com/AlexKin55/Clavis
+license: Proprietary
+
+depends:
+  - postgresql-server
+  - postgresql
+
+contents:
+  - src: postgres/schema.sql
+    dst: /usr/share/clavis/postgres/schema.sql
+  - src: packaging/scripts/postgres-setup.sh
+    dst: /usr/lib/clavis/postgres-setup.sh
+  - src: packaging/systemd/clavis-postgres-setup.service
+    dst: /usr/lib/systemd/system/clavis-postgres-setup.service
+  - src: packaging/scripts/postgres-setup.env
+    dst: /etc/clavis/postgres.env
+    type: config|noreplace
+  - src: packaging/scripts/postgres.postinstall
+    dst: /usr/lib/clavis/postgres.postinstall
+  - src: packaging/scripts/postgres.postremove
+    dst: /usr/lib/clavis/postgres.postremove
+
+scripts:
+  postinstall: packaging/scripts/postgres.postinstall
+  postremove: packaging/scripts/postgres.postremove
+
+rpm:
+  group: Applications/System

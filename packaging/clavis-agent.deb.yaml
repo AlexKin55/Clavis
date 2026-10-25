@@ -1,0 +1,45 @@
+# nfpm configuration for the Clavis agent package (Debian/Ubuntu).
+name: clavis-agent
+arch: amd64
+platform: linux
+version: "0.1.0"
+version_schema: semver
+section: utils
+priority: optional
+maintainer: Clavis Project <maintainers@clavis.local>
+description: |
+  Clavis transparent document encryption agent.
+  Mounts a FUSE filesystem with on-the-fly AES-CTR encryption, applies
+  access policies (root/firejail/whitelist) and talks to the Clavis Key
+  Server for key issuance and end-to-end key exchange.
+homepage: https://github.com/AlexKin55/Clavis
+license: Proprietary
+
+depends:
+  - fuse3
+  - libgl1
+  - libegl1
+  - libwayland-client0
+  - libxkbcommon0
+recommends:
+  - dbus
+
+contents:
+  - src: packaging/stage/agent/clavis-agent
+    dst: /usr/bin/clavis-agent
+  - src: packaging/stage/agent/clavis-gui
+    dst: /usr/bin/clavis-gui
+  - src: packaging/stage/common/settings.yaml
+    dst: /etc/clavis/settings.yaml
+    type: config|noreplace
+  - src: packaging/systemd/clavis-agent.service
+    dst: /usr/lib/systemd/system/clavis-agent.service
+  - src: packaging/scripts/agent.postinstall
+    dst: /usr/lib/clavis/agent.postinstall
+  - src: packaging/scripts/agent.postremove
+    dst: /usr/lib/clavis/agent.postremove
+
+scripts:
+  postinstall: packaging/scripts/agent.postinstall
+  postremove: packaging/scripts/agent.postremove
+

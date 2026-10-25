@@ -1,0 +1,27 @@
+# Clavis Key Server systemd service (packaged).
+
+[Unit]
+Description=Clavis Key Server (central key and policy management)
+Documentation=https://github.com/AlexKin55/Clavis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=clavis
+Group=clavis
+ExecStart=/usr/bin/clavis-server -config /etc/clavis/server.yaml
+Restart=on-failure
+RestartSec=3
+UMask=0077
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
