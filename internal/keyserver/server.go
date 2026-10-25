@@ -1,0 +1,274 @@
+// Package keyserver implements the Key Server API that the agent client
+// (internal/keyclient) talks to: key issuance for documents, revocation,
+// policy management and the audit trail. TLS/mTLS is applied at the
+// http.Server level; the handler extracts the client identity from the
+// peer certificate or the X-Agent-ID header.
+package keyserver
+
+import (
+	"encoding/hex"
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/clavis/clavis/internal/keyclient"
+)
+
+// DefaultAPIPath is the key issuance endpoint (must match keyclient).
+const DefaultAPIPath = "/api/v1/keys/issue"
+
+// Config tunes the Key Server behavior.
+type Config struct {
+	// DefaultPolicies are granted to a document at first issuance.
+	DefaultPolicies keyclient.Policies
+	// DefaultTTL bounds the issued keys unless overridden per document.
+	DefaultTTL time.Duration
+}
+
+// Server is the Key Server HTTP handler.
+type Server struct {
+	store *Store
+	cfg   Config
+}
+
+// NewServer creates the Key Server handler.
+func NewServer(cfg Config, store *Store) *Server {
+	if cfg.DefaultTTL <= 0 {
+		cfg.DefaultTTL = time.Hour
+	}
+	if store == nil {
+		store = NewStore()
+	}
+	return &Server{store: store, cfg: cfg}
+}
+
+// Handler returns the HTTP routes.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("POST "+DefaultAPIPath, s.handleIssue)
+	mux.HandleFunc("POST /api/v1/keys/revoke", s.handleRevokeDocument)
+	mux.HandleFunc("PUT /api/v1/documents/{uuid}/policy", s.handleSetPolicy)
+	mux.HandleFunc("GET /api/v1/documents", s.handleListDocuments)
+	mux.HandleFunc("GET /api/v1/audit", s.handleAudit)
+	mux.HandleFunc("POST /api/v1/agents/register", s.handleRegisterAgent)
+	mux.HandleFunc("POST /api/v1/agents/revoke", s.handleRevokeAgent)
+
+	return mux
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type issueResponse struct {
+	Key        string             `json:"key"`
+	TTLSeconds int64              `json:"ttl_seconds"`
+	Policies   keyclient.Policies `json:"policies"`
+}
+
+func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
+	var req keyclient.IssueRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.DocumentUUID == "" {
+		writeError(w, http.StatusBadRequest, "document_uuid is required")
+		return
+	}
+
+	agentID := agentIDFromRequest(r)
+	if agentID == "" {
+		agentID = "(unknown)"
+	}
+	s.store.EnsureAgent(agentID)
+
+	// Deny revoked agents immediately ("one click" revocation).
+	if s.store.AgentRevoked(agentID) {
+		s.store.AddAudit(AuditEntry{
+			Time: time.Now(), AgentID: agentID,
+			Document: req.DocumentUUID, Allowed: false, Reason: "agent revoked",
+		})
+		writeError(w, http.StatusForbidden, "agent revoked")
+		return
+	}
+
+	// The document key is deterministic: created once, served identically.
+	doc, err := s.store.EnsureDocument(req.DocumentUUID, s.cfg.DefaultPolicies, s.cfg.DefaultTTL)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store failure")
+		return
+	}
+	if doc.Revoked {
+		s.store.AddAudit(AuditEntry{
+			Time: time.Now(), AgentID: agentID,
+			Document: req.DocumentUUID, Allowed: false, Reason: "document revoked",
+		})
+		writeError(w, http.StatusForbidden, "document revoked")
+		return
+	}
+
+	s.store.AddAudit(AuditEntry{
+		Time: time.Now(), AgentID: agentID,
+		Document: req.DocumentUUID, Allowed: true, Reason: "key issued",
+	})
+
+	writeJSON(w, http.StatusOK, issueResponse{
+		Key:        hex.EncodeToString(doc.Key),
+		TTLSeconds: int64(doc.TTL / time.Second),
+		Policies:   doc.Policies,
+	})
+}
+
+type revokeDocumentRequest struct {
+	DocumentUUID string `json:"document_uuid"`
+}
+
+func (s *Server) handleRevokeDocument(w http.ResponseWriter, r *http.Request) {
+	var req revokeDocumentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.DocumentUUID == "" {
+		writeError(w, http.StatusBadRequest, "document_uuid is required")
+		return
+	}
+	s.store.RevokeDocument(req.DocumentUUID)
+	writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
+}
+
+type setPolicyRequest struct {
+	Policies   keyclient.Policies `json:"policies"`
+	TTLSeconds int64              `json:"ttl_seconds"`
+}
+
+func (s *Server) handleSetPolicy(w http.ResponseWriter, r *http.Request) {
+	uuid := r.PathValue("uuid")
+	if uuid == "" {
+		writeError(w, http.StatusBadRequest, "uuid is required")
+		return
+	}
+
+	var req setPolicyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := req.Policies.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	if ttl <= 0 {
+		ttl = s.cfg.DefaultTTL
+	}
+	if err := s.store.SetPolicy(uuid, req.Policies, ttl); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"updated": true})
+}
+
+type documentView struct {
+	UUID       string             `json:"uuid"`
+	TTLSeconds int64              `json:"ttl_seconds"`
+	Revoked    bool               `json:"revoked"`
+	Policies   keyclient.Policies `json:"policies"`
+}
+
+func (s *Server) handleListDocuments(w http.ResponseWriter, _ *http.Request) {
+	docs := s.store.Documents()
+	view := make([]documentView, 0, len(docs))
+	for _, d := range docs {
+		view = append(view, documentView{
+			UUID:       d.UUID,
+			TTLSeconds: int64(d.TTL / time.Second),
+			Revoked:    d.Revoked,
+			Policies:   d.Policies,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"documents": view})
+}
+
+type auditView struct {
+	Time     string `json:"time"`
+	AgentID  string `json:"agent_id"`
+	Document string `json:"document"`
+	Allowed  bool   `json:"allowed"`
+	Reason   string `json:"reason"`
+}
+
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	entries := s.store.ListAudit(limit)
+	view := make([]auditView, 0, len(entries))
+	for _, e := range entries {
+		view = append(view, auditView{
+			Time:     e.Time.Format(time.RFC3339),
+			AgentID:  e.AgentID,
+			Document: e.Document,
+			Allowed:  e.Allowed,
+			Reason:   e.Reason,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"audit": view})
+}
+
+type registerAgentRequest struct {
+	AgentID string `json:"agent_id"`
+}
+
+func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
+	var req registerAgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+	s.store.EnsureAgent(req.AgentID)
+	writeJSON(w, http.StatusOK, map[string]bool{"registered": true})
+}
+
+type revokeAgentRequest struct {
+	AgentID string `json:"agent_id"`
+}
+
+func (s *Server) handleRevokeAgent(w http.ResponseWriter, r *http.Request) {
+	var req revokeAgentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+	s.store.RevokeAgent(req.AgentID)
+	writeJSON(w, http.StatusOK, map[string]bool{"revoked": true})
+}
+
+// agentIDFromRequest takes the client identity from the X-Agent-ID header
+// or, with mTLS, from the client certificate common name.
+func agentIDFromRequest(r *http.Request) string {
+	if id := r.Header.Get("X-Agent-ID"); id != "" {
+		return id
+	}
+	if r.TLS != nil {
+		for _, cert := range r.TLS.PeerCertificates {
+			if cn := cert.Subject.CommonName; cn != "" {
+				return cn
+			}
+		}
+	}
+	return ""
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}

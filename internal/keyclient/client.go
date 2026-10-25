@@ -22,6 +22,7 @@ const issuePath = "/api/v1/keys/issue"
 type Client struct {
 	baseURL string
 	httpc   *http.Client
+	agentID string
 }
 
 // TLSConfig pins the files for mutual TLS.
@@ -73,6 +74,13 @@ func NewClient(baseURL string, tlsCfg *tls.Config, timeout time.Duration) *Clien
 	}
 }
 
+// SetAgentID sets the agent identity sent in the X-Agent-ID header.
+// The server records it in the audit trail (with mTLS the certificate
+// CN is used instead).
+func (c *Client) SetAgentID(id string) {
+	c.agentID = id
+}
+
 // IssueKey requests the key for the document.
 func (c *Client) IssueKey(ctx context.Context, req IssueRequest) (*IssueResponse, error) {
 	body, err := json.Marshal(req)
@@ -85,6 +93,9 @@ func (c *Client) IssueKey(ctx context.Context, req IssueRequest) (*IssueResponse
 		return nil, fmt.Errorf("keyclient: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.agentID != "" {
+		httpReq.Header.Set("X-Agent-ID", c.agentID)
+	}
 
 	resp, err := c.httpc.Do(httpReq)
 	if err != nil {

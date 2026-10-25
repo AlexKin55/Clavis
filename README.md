@@ -13,7 +13,7 @@ implementation plan is in [`../docs/plan-go.md`](../docs/plan-go.md).
 ```
 clavis/
 ├── agent/                  # agent entry point (CMD)
-├── server/                 # Key Server entry point (planned)
+├── server/                 # Key Server entry point (CMD)
 ├── internal/
 │   ├── app/                # initialization, graceful shutdown, health
 │   ├── config/             # settings.yaml loading + validation
@@ -21,13 +21,15 @@ clavis/
 │   ├── fuse/               # FUSE mirror with on-the-fly encryption
 │   ├── interceptor/        # access policy: firejail/root/whitelist + audit
 │   ├── keyclient/          # Key Server client: mTLS, policies, TTL cache
+│   ├── keyserver/          # Key Server API: issue/revoke/policy/audit
 │   ├── logging/            # slog + rotation (lumberjack)
 │   ├── sandbox/            # Firejail sandbox (net/print/sound lockdown)
 │   ├── subject/            # calling process identity from /proc
 │   └── version/            # build version (ldflags)
 ├── scripts/                # helper scripts
 ├── tests/                  # e2e tests (to be added)
-└── settings.yaml           # sample configuration
+├── settings.yaml           # agent sample configuration
+└── server.yaml             # Key Server sample configuration
 ```
 
 ## Requirements
@@ -60,6 +62,9 @@ go run ./agent -config settings.yaml
 
 # run an application inside the Firejail sandbox (double security perimeter)
 go run ./agent open gedit /home/alex/Clavis/report.txt
+
+# Key Server (central key issuance, revocation, audit)
+go run ./server -config server.yaml
 ```
 
 ## Configuration

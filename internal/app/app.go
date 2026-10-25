@@ -66,6 +66,7 @@ func Run(ctx context.Context, cfgPath string) error {
 		}
 		client := keyclient.NewClient(cfg.Server.URL, tlsCfg,
 			time.Duration(cfg.Server.TimeoutSeconds)*time.Second)
+		client.SetAgentID(cfg.Agent.ID)
 		keyGetter = keyclient.NewGetter(client, keyclient.NewCache())
 		logger.Info("using key server", "url", cfg.Server.URL)
 	}
