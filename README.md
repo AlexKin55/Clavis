@@ -35,6 +35,7 @@ clavis/
 │   ├── fuse/               # real FUSE mount tests
 │   ├── e2e/                # relay + direct key exchange tests
 │   └── keyserver/          # Key Server HTTP API tests
+├── postgres/               # shared PostgreSQL service (compose + schema)
 ├── settings.yaml           # agent sample configuration
 └── server.yaml             # Key Server sample configuration
 ```
@@ -82,7 +83,21 @@ end-to-end tests (real mounts, HTTP servers, relay exchanges) are kept
 separately in [`tests/`](tests/) with a mirrored directory structure and
 use only the public API.
 
-## Multi-server failover
+## Key Server cluster (shared database)
+
+All Key Server instances connect to **one shared PostgreSQL** database
+(see [`postgres/`](postgres/)), so agents, reader keys, revocations,
+policies and the audit trail are identical on every server — the database
+itself is the source of truth. Each server also accepts a comma-separated
+`peers` list and health-checks the other instances.
+
+```yaml
+# server.yaml (on every instance)
+db_url: "postgres://clavis:...@db-host:5432/clavis"
+peers: "https://ks2.example.com:8443,https://ks3.example.com:8443"
+```
+
+## Multi-server failover (agent side)
 
 `server.url` accepts several Key Server addresses separated by commas
 (e.g. `https://ks1.example.com,https://ks2.example.com`). The agent:

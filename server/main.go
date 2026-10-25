@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -120,6 +121,18 @@ func run() int {
 		}
 		serveErr <- httpServer.Serve(ln)
 	}()
+	// Peer health monitoring: all servers share the same PostgreSQL
+	// database, so data consistency comes from the DB itself; the monitor
+	// keeps the operator informed about the other instances.
+	peers := splitPeers(cfg.Peers)
+	if len(peers) > 0 {
+		interval := time.Duration(cfg.PeerCheckIntervalSeconds) * time.Second
+		if interval <= 0 {
+			interval = 30 * time.Second
+		}
+		go monitorPeers(ctx, peers, interval)
+	}
+
 	fmt.Printf("clavis key server listening on %s\n", cfg.Listen)
 
 	select {
@@ -142,6 +155,51 @@ func run() int {
 
 // serverTLS builds the mTLS configuration. When tls.ca_file is set, agents
 // must present a certificate signed by one of the listed CAs.
+// monitorPeers periodically checks the health of the configured peer
+// Key Servers. It is a coordination utility; the shared PostgreSQL
+// database already keeps all instances consistent.
+func monitorPeers(ctx context.Context, peers []string, interval time.Duration) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	check := func() {
+		for _, peer := range peers {
+			url := strings.TrimRight(peer, "/") + "/healthz"
+			alive := false
+			if resp, err := client.Get(url); err == nil {
+				alive = resp.StatusCode == http.StatusOK
+				_ = resp.Body.Close()
+			}
+			status := "unreachable"
+			if alive {
+				status = "ok"
+			}
+			fmt.Printf("peer %s: %s\n", peer, status)
+		}
+	}
+
+	check()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			check()
+		}
+	}
+}
+
+// splitPeers parses a comma-separated peer list.
+func splitPeers(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
 // loadOrCreateServerKey loads the 32-byte Ed25519 seed from signingKeyFile
 // or, on first start, generates it (mode 0600). The private key is the
 // server secret S used together with agent material for reader-key

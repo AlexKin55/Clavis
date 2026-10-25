@@ -19,6 +19,13 @@ type Config struct {
 	// RelayListen enables the e2e relay listener (direct key exchange
 	// between agents). Empty disables end-to-end mode.
 	RelayListen string `yaml:"relay_listen"`
+	// Peers is a comma separated list of other Key Server addresses
+	// (e.g. "https://ks2.example.com:8443,https://ks3.example.com:8443").
+	// Every server shares the same PostgreSQL database, so data is already
+	// consistent; peers are health-monitored for coordination.
+	Peers string `yaml:"peers"`
+	// PeerCheckIntervalSeconds is how often peers' /healthz is probed.
+	PeerCheckIntervalSeconds int `yaml:"peer_check_interval_seconds"`
 	// TLS enables mutual TLS (agent client certificates enforced).
 	TLS TLSConfig `yaml:"tls"`
 	// SigningKeyFile is the path to the 32-byte seed of the server's
@@ -41,8 +48,9 @@ type TLSConfig struct {
 // DefaultConfig returns the defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		Listen:            "127.0.0.1:8443",
-		DefaultTTLSeconds: 3600,
+		Listen:                   "127.0.0.1:8443",
+		DefaultTTLSeconds:        3600,
+		PeerCheckIntervalSeconds: 30,
 	}
 }
 
