@@ -5,8 +5,11 @@ remote key and policy management (Key Server), a Firejail sandbox and
 RBA (Risk-Based Authentication). The code is written in Go; the full
 implementation plan is in [`../docs/plan-go.md`](../docs/plan-go.md).
 
-> Current status: **Phase 0** (project skeleton). The FUSE backend will be
-> added in Phase 2.
+> Status: full v1+v2 pipeline implemented (crypto, FUSE, access control,
+> Key Server client/server, sandbox, tokens, e2e relay, packaging).
+>
+> Documentation: [ARCHITECTURE](docs/ARCHITECTURE.md) ·
+> [SECURITY](docs/SECURITY.md) · [v2 crypto model](../docs/crypto-model-v2.md)
 
 ## Repository layout
 
@@ -85,6 +88,22 @@ use only the public API.
 go test ./internal/crypto/ -bench=. -benchtime=1x
 go test ./internal/fuse/ -bench=. -benchtime=1x
 ```
+
+## Roadmap
+
+Implemented:
+
+- FUSE transparent encryption (v1 and v2 formats), AES-CTR random access
+- access control: Firejail/root/whitelist policy, audit trail
+- Key Server: issue, revocation, policies, temporary keys, PostgreSQL
+- v2 model: owner keys, wrapped DK, signatures, ownership change on edit
+- e2e mode: relay + direct AS exchange, sandbox Firejail runner, PKCS#11
+- packaging: systemd units, installer, benchmarks
+
+Planned (per request, kept for later):
+
+- Phase 6: RBA (location, behavior metrics, risk heuristics)
+- Phase 8: OS integrity monitoring
 
 ## Deployment
 

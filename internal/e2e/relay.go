@@ -6,6 +6,7 @@
 package e2e
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,19 +34,35 @@ type handshake struct {
 }
 
 // Dial connects to the relay server and performs the initial handshake.
-// The returned connection is a raw bidirectional pipe to the counterpart.
+// The handshake is length-prefixed (2-byte big-endian length + JSON), so
+// the relay never over-reads binary payload bytes that follow.
 func Dial(relayAddr, sessionID string, role Role, agentID string) (net.Conn, error) {
 	conn, err := net.Dial("tcp", relayAddr)
 	if err != nil {
 		return nil, fmt.Errorf("e2e: dial relay: %w", err)
 	}
-	if err := json.NewEncoder(conn).Encode(handshake{
+	hs, err := json.Marshal(handshake{
 		SessionID: sessionID,
 		Role:      role,
 		AgentID:   agentID,
-	}); err != nil {
+	})
+	if err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("e2e: handshake: %w", err)
+		return nil, fmt.Errorf("e2e: marshal handshake: %w", err)
+	}
+	if len(hs) > 65535 {
+		_ = conn.Close()
+		return nil, fmt.Errorf("e2e: handshake too large")
+	}
+	var header [2]byte
+	binary.BigEndian.PutUint16(header[:], uint16(len(hs)))
+	if _, err := conn.Write(header[:]); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("e2e: write handshake length: %w", err)
+	}
+	if _, err := conn.Write(hs); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("e2e: write handshake: %w", err)
 	}
 	return conn, nil
 }
@@ -88,8 +105,19 @@ func (s *RelayServer) Serve() error {
 func (s *RelayServer) Close() error { return s.ln.Close() }
 
 func (s *RelayServer) handle(conn net.Conn) {
+	var header [2]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		_ = conn.Close()
+		return
+	}
+	length := int(binary.BigEndian.Uint16(header[:]))
+	buf := make([]byte, length)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		_ = conn.Close()
+		return
+	}
 	var handShake handshake
-	if err := json.NewDecoder(conn).Decode(&handShake); err != nil {
+	if err := json.Unmarshal(buf, &handShake); err != nil {
 		_ = conn.Close()
 		return
 	}

@@ -26,57 +26,8 @@ func startRelay(t *testing.T) *e2e.RelayServer {
 	return srv
 }
 
-// TestRelayPair verifies raw bytes flow between two relay peers in both
-// directions.
-func TestRelayPair(t *testing.T) {
-	srv := startRelay(t)
-
-	deadline := time.Now().Add(5 * time.Second)
-	ownerConn, err := e2e.Dial(srv.Addr(), "sess-1", e2e.RoleOwner, "ag-owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ownerConn.Close() })
-	peerConn, err := e2e.Dial(srv.Addr(), "sess-1", e2e.RolePeer, "ag-peer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = peerConn.Close() })
-
-	// Owner -> peer.
-	toPeer := []byte("hello from owner")
-	if _, err := ownerConn.Write(toPeer); err != nil {
-		t.Fatal(err)
-	}
-	if err := peerConn.SetReadDeadline(deadline); err != nil {
-		t.Fatal(err)
-	}
-	gotPeer := make([]byte, len(toPeer))
-	if _, err := io.ReadFull(peerConn, gotPeer); err != nil {
-		t.Fatalf("peer read: %v", err)
-	}
-	if !bytes.Equal(gotPeer, toPeer) {
-		t.Errorf("peer payload mismatch: %q", gotPeer)
-	}
-
-	// Peer -> owner.
-	toOwner := []byte("reply from peer")
-	if _, err := peerConn.Write(toOwner); err != nil {
-		t.Fatal(err)
-	}
-	if err := ownerConn.SetReadDeadline(deadline); err != nil {
-		t.Fatal(err)
-	}
-	gotOwner := make([]byte, len(toOwner))
-	if _, err := io.ReadFull(ownerConn, gotOwner); err != nil {
-		t.Fatalf("owner read: %v", err)
-	}
-	if !bytes.Equal(gotOwner, toOwner) {
-		t.Errorf("owner payload mismatch: %q", gotOwner)
-	}
-}
-
-// TestKeyShareOverRelay verifies the full e2e exchange: the owner sends
+// TestKeyShareOverRelay verifies the full e2e exchange (including the
+// relay pairing): the owner sends
 // AS and its public key directly to the peer through the relay; the relay
 // never sees the plain material.
 func TestKeyShareOverRelay(t *testing.T) {
