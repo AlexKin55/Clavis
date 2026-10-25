@@ -69,16 +69,11 @@ func TestStolenV2FileUselessWithoutReaderKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	serverPub := make([]byte, 32)
-	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
-		t.Fatal(err)
-	}
-	asOwner, err := owner.ReaderKey(serverPub, nonce)
+	asOwner, err := owner.UnifiedReaderKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	asAttacker, err := attacker.ReaderKey(serverPub, nonce)
+	asAttacker, err := attacker.UnifiedReaderKey()
 	if err != nil {
 		t.Fatal(err)
 	}

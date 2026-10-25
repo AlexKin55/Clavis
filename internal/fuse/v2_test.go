@@ -87,7 +87,7 @@ func TestV2CreateSignedDocument(t *testing.T) {
 	}
 
 	// B reads the document through the reader-key provider.
-	as, err := owner.ReaderKey(serverPub, serverNonce)
+	as, err := owner.UnifiedReaderKey()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestV2TamperFailsSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	as, _ := owner.ReaderKey(serverPub, serverNonce)
+	as, _ := owner.UnifiedReaderKey()
 	provider := staticReaderProvider{owner.OwnerKeyID(): {as: as, pub: owner.PublicSignatureKey()}}
 	readerRoot := NewSecureRoot(&Config{
 		SourceDir:  sourceDir,
@@ -207,8 +207,8 @@ func TestV2OwnershipChange(t *testing.T) {
 	}
 
 	// B opens the document (read-only) and then edits it.
-	asA, _ := ownerA.ReaderKey(serverPub, serverNonce)
-	asB, _ := ownerB.ReaderKey(serverPub, serverNonce)
+	asA, _ := ownerA.UnifiedReaderKey()
+	asB, _ := ownerB.UnifiedReaderKey()
 	providerAB := staticReaderProvider{
 		ownerA.OwnerKeyID(): {as: asA, pub: ownerA.PublicSignatureKey()},
 		ownerB.OwnerKeyID(): {as: asB, pub: ownerB.PublicSignatureKey()},
@@ -298,7 +298,7 @@ func TestV2ReadOnlyDoesNotChangeOwner(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	asA, _ := ownerA.ReaderKey(serverPub, serverNonce)
+	asA, _ := ownerA.UnifiedReaderKey()
 	readerRoot := NewSecureRoot(&Config{
 		SourceDir:   sourceDir,
 		KeyGetter:   crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),

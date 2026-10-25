@@ -154,6 +154,14 @@ func EnsureRegistered(ctx context.Context, multi *keyclient.MultiClient, urls []
 	if serverCount == 0 {
 		serverCount = multi.Length()
 	}
+	// The reader key is a single unified derivation (variant 1): it does
+	// not depend on any server key S or nonce, so the same AS is
+	// registered on every server in the list.
+	as, err := identity.UnifiedReaderKey()
+	if err != nil {
+		return err
+	}
+
 	changed := false
 	for i := 0; i < serverCount; i++ {
 		url := ""
@@ -185,16 +193,7 @@ func EnsureRegistered(ctx context.Context, multi *keyclient.MultiClient, urls []
 			changed = true
 		}
 
-		pub, err := hex.DecodeString(ss.ServerPub)
-		if err != nil || len(ss.ServerNonce) == 0 {
-			continue
-		}
-		nonce, err := hex.DecodeString(ss.ServerNonce)
-		if err != nil {
-			continue
-		}
-		as, err := identity.ReaderKey(pub, nonce)
-		if err != nil {
+		if ss.AgentID == "" {
 			continue
 		}
 		if err := multi.SetReaderKeyAt(ctx, i, keyclient.SetReaderKeyRequest{

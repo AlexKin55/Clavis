@@ -118,9 +118,7 @@ func TestDerivedReaderKeyMatchesServer(t *testing.T) {
 		t.Fatalf("ReaderKey() error: %v", err)
 	}
 
-	pubServer, _ := state.ServerPub()
-	nonce, _ := state.ServerNonceBytes()
-	as, err := identity.ReaderKey(pubServer, nonce)
+	as, err := identity.UnifiedReaderKey()
 	if err != nil {
 		t.Fatal(err)
 	}

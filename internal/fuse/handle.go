@@ -365,7 +365,7 @@ func (r *SecureRoot) createProtectedFileV2(_ context.Context, path string, mode 
 		_ = osf.Close()
 		return nil, err
 	}
-	readerKey, err := identity.ReaderKey(r.cfg.ServerPub, r.cfg.ServerNonce)
+	readerKey, err := identity.UnifiedReaderKey()
 	if err != nil {
 		_ = osf.Close()
 		return nil, err
@@ -489,7 +489,7 @@ func (r *SecureRoot) openProtectedFileV2(ctx context.Context, osf *os.File, _ st
 	// The editor's own reader key, needed to re-encrypt on ownership change.
 	var selfAS []byte
 	if r.cfg.Identity != nil && len(r.cfg.ServerPub) > 0 && len(r.cfg.ServerNonce) > 0 {
-		selfAS, _ = r.cfg.Identity.ReaderKey(r.cfg.ServerPub, r.cfg.ServerNonce)
+		selfAS, _ = r.cfg.Identity.UnifiedReaderKey()
 	}
 
 	return &secureFile{

@@ -15,6 +15,7 @@ const MasterKeySize = 32
 // readerKeyInfo labels the HKDF context where the reader key (AS) is
 // derived from the master key.
 const readerKeyInfo = "clavis-reader-key"
+const unifyReaderKeyInfo = "clavis-reader-key-v1"
 
 // AgentIdentity is the local identity of an agent: the master key A and
 // an Ed25519 key pair used to sign documents. Both secrets stay on the
@@ -48,13 +49,29 @@ func (id *AgentIdentity) OwnerKeyID() [16]byte {
 	return out
 }
 
-// ReaderKey derives the read-only wrapper key AS:
+// UnifiedReaderKey derives the single read-only wrapper key AS:
+//
+//	AS = HKDF-SHA256(ikm = A || SigPub, salt = nil,
+//	                 info = "clavis-reader-key-v1", 32 bytes)
+//
+// AS does NOT depend on any server key S or nonce, so it is the SAME on
+// every Key Server ("variant 1"). This makes the whole cluster able to
+// return the owner's AS regardless of which server answers, and a
+// compromised server private key cannot alter or recover AS.
+func (id *AgentIdentity) UnifiedReaderKey() ([]byte, error) {
+	ikm := make([]byte, 0, len(id.MasterKey)+len(id.SigPub))
+	ikm = append(ikm, id.MasterKey...)
+	ikm = append(ikm, id.SigPub...)
+	return deriveHKDF(ikm, nil, unifyReaderKeyInfo, MasterKeySize)
+}
+
+// ReaderKey derives the server-salted read-only wrapper key AS:
 //
 //	AS = HKDF-SHA256(ikm = A || SigPub, salt = nonceServer || pubServer,
 //	                 info = "clavis-reader-key", 32 bytes)
 //
-// AS is registered with the server and allows unwrapping document keys
-// (read access); it cannot create valid modifications (signature needed).
+// Deprecated for cluster deployments: AS differs per server, which is
+// inconsistent with a shared database. Kept for backward compatibility.
 func (id *AgentIdentity) ReaderKey(pubServer, nonceServer []byte) ([]byte, error) {
 	ikm := make([]byte, 0, len(id.MasterKey)+len(id.SigPub))
 	ikm = append(ikm, id.MasterKey...)

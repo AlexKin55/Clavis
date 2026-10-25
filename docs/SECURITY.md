@@ -10,7 +10,7 @@ threats and operational recommendations.
 | **A** (master key, 32B) | agent workstation (`identity_file`, mode 0600); never leaves | root of the owner identity |
 | **Ed25519 key pair** | same identity file | signs documents; the signature makes the reader key strictly read-only |
 | **S** (server public key) | public, distributed at registration | input for reader-key derivation |
-| **AS** (reader key) = `HKDF-SHA256(A‖SigPub, nonceServer‖S, "clavis-reader-key")` | registered on the Key Server (PostgreSQL) | unwraps document keys (read access only) |
+| **AS** (reader key) = `HKDF-SHA256(A‖SigPub, nil, "clavis-reader-key-v1")` | registered on every Key Server (shared PostgreSQL) | unwraps document keys (read access only); **single value per agent, independent of any server key** |
 | **DK** (document key, 32B) | never stored: wrapped under AS inside the v2 header | encrypts the document payload (AES-256-CTR) |
 | **Session key (e2e)** | ephemeral, derived from X25519 ECDH + HKDF + AES-GCM | transports AS directly between agents |
 
@@ -27,6 +27,7 @@ server (relay carries only the encrypted rendezvous payload).
 | Unauthorized application | FUSE open/create gated by `internal/interceptor` (root/firejail/whitelist) |
 | Network exfiltration of data | Firejail `--net=none`; documents useless without keys anyway |
 | Revocation bypass | reader-key issuance denied for revoked agents; client cache honors TTL and revocation hook |
+| Server private key compromise | AS does not depend on any server private key: recovery of AS requires the agent master key A (never stored on servers); remediation = rotate server signing key + revoke server certificate (mTLS/CA) |
 | Malicious edits | document signature by the owner; editing a foreign document re-encrypts it to the editor (owner change) |
 
 ## Operational recommendations
@@ -41,6 +42,29 @@ server (relay carries only the encrypted rendezvous payload).
   documents (owner change).
 - Keep the token PIN and mTLS keys out of version control.
 - TTLs: prefer short reader-key TTLs so revocation propagates quickly.
+
+## Server key compromise (response)
+
+`AS` is derived **without** any server key (variant 1). Consequences of a
+compromised server private key:
+
+- documents **cannot** be decrypted from the key alone — AS requires the
+  agent master key A, which never leaves the workstation;
+- the attacker gains the server's *identity*: they could impersonate the
+  server during new-agent registrations (MITM) and tamper with future
+  responses;
+- read of the shared database is a separate attack vector (DB access),
+  not the key itself — DB compromise exposes stored AS values anyway
+  (mitigation: wrap AS under an HSM master key, see below).
+
+Remediation steps:
+
+1. Rotate the server Ed25519 seed (`signing_key_file`) on every instance;
+2. Revoke the server certificate in the CA (mTLS) — agents stop trusting
+   the old identity without any agent change;
+3. Existing agents do **not** need re-registration: their AS is
+   unchanged (server-independent);
+4. Review `clavis_audit` for suspicious registrations and revoke them.
 
 ## Current limitations (roadmap)
 

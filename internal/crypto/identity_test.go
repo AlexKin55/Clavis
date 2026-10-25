@@ -78,6 +78,42 @@ func TestReaderKeyDeterministic(t *testing.T) {
 	}
 }
 
+// TestUnifiedReaderKey verifies the cluster-wide single AS: it is
+// deterministic and independent of any server key/nonce.
+func TestUnifiedReaderKey(t *testing.T) {
+	id, err := NewAgentIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := id.UnifiedReaderKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := id.UnifiedReaderKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Error("UnifiedReaderKey must be deterministic")
+	}
+	if bytes.Equal(first, id.MasterKey) {
+		t.Error("UnifiedReaderKey must differ from the master key")
+	}
+
+	// The same AS is produced regardless of any (future) server materials.
+	otherServer := bytes.Repeat([]byte{0x42}, 32)
+	otherNonce := bytes.Repeat([]byte{0x24}, 16)
+	salted, err := id.ReaderKey(otherServer, otherNonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The old salted derivation depends on server materials, the unified
+	// one does not: they intentionally differ.
+	if bytes.Equal(salted, first) {
+		t.Error("salted and unified reader keys must differ")
+	}
+}
+
 // TestReaderKeyNeverEqualsMaster verifies that AS does not reveal A.
 func TestReaderKeyNeverEqualsMaster(t *testing.T) {
 	id, err := NewAgentIdentity()
