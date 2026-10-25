@@ -8,12 +8,14 @@
 // their document, with an explicit decision: grant the decryption key or
 // refuse.
 //
+// The flow logic lives in internal/gui (toolkit-independent, tested with
+// interface doubles); this file only adapts it to Fyne widgets.
+//
 // Cryptographic operations are performed by the agent (which holds the
 // identity); the GUI only talks to its localhost API.
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -28,7 +30,9 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 
+	"github.com/clavis/clavis/internal/agentapi"
 	"github.com/clavis/clavis/internal/crypto"
+	"github.com/clavis/clavis/internal/gui"
 	"github.com/clavis/clavis/internal/mode"
 	"github.com/clavis/clavis/internal/notify"
 )
@@ -55,7 +59,7 @@ func main() {
 	radio.Horizontal = true
 
 	check := widget.NewButton("Проверить сквозные запросы", func() {
-		checkPending(w, *uiAddr)
+		_, _ = gui.CheckPendingRequests(agentapi.NewClient(*uiAddr), fyneFlow{w: w})
 	})
 
 	content := container.NewVBox(
@@ -83,81 +87,29 @@ func modeName(m crypto.Mode) string {
 	return s
 }
 
-func checkPending(w fyne.Window, base string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+// fyneFlow adapts the toolkit-independent approval flow to Fyne dialog
+// widgets (see internal/gui).
+type fyneFlow struct {
+	w fyne.Window
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/e2e/pending", nil)
-	if err != nil {
-		dialog.ShowError(err, w)
-		return
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		dialog.ShowInformation("Clavis", "Агент недоступен: "+err.Error(), w)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		dialog.ShowError(err, w)
-		return
-	}
-	var out struct {
-		Pending []pending `json:"pending"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		dialog.ShowError(err, w)
-		return
-	}
-	if len(out.Pending) == 0 {
-		dialog.ShowInformation("Clavis", "Нет ожидающих сквозных запросов.", w)
-		return
-	}
-
-	first := out.Pending[0]
+// ConfirmApproval implements gui.FlowEvents.
+func (f fyneFlow) ConfirmApproval(peerAgent string, onDecision func(bool)) {
 	message := fmt.Sprintf(
 		"Пользователь %q хочет открыть документ, зашифрованный вами сквозным шифрованием.\n\nДать ключ для расшифровки?",
-		first.PeerAgent,
+		peerAgent,
 	)
-	dialog.ShowConfirm("Доступ к документу", message,
-		func(grant bool) {
-			if grant {
-				approve(w, base, first.SessionID)
-			} else {
-				dialog.ShowInformation("Clavis", "Запрос отклонён.", w)
-			}
-		}, w)
+	dialog.ShowConfirm("Доступ к документу", message, onDecision, f.w)
 }
 
-func approve(w fyne.Window, base, sessionID string) {
-	payload, _ := json.Marshal(map[string]string{"session_id": sessionID})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/e2e/approve", bytes.NewReader(payload))
-	if err != nil {
-		dialog.ShowError(err, w)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		dialog.ShowError(err, w)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		dialog.ShowInformation("Clavis", "Не удалось передать ключ: HTTP "+resp.Status, w)
-		return
-	}
-	dialog.ShowInformation("Clavis", "Ключ доступа передан.", w)
+// ShowInfo implements gui.FlowEvents.
+func (f fyneFlow) ShowInfo(message string) {
+	dialog.ShowInformation("Clavis", message, f.w)
 }
 
-type pending struct {
-	SessionID string `json:"session_id"`
-	PeerAgent string `json:"peer_agent_id"`
+// ShowError implements gui.FlowEvents.
+func (f fyneFlow) ShowError(err error) {
+	dialog.ShowError(err, f.w)
 }
 
 type notification struct {
