@@ -16,6 +16,9 @@ type Config struct {
 	DefaultTTLSeconds int `yaml:"default_ttl_seconds"`
 	// DBURL, when set, enables the PostgreSQL store (agents + audit).
 	DBURL string `yaml:"db_url"`
+	// RelayListen enables the e2e relay listener (direct key exchange
+	// between agents). Empty disables end-to-end mode.
+	RelayListen string `yaml:"relay_listen"`
 	// TLS enables mutual TLS (agent client certificates enforced).
 	TLS TLSConfig `yaml:"tls"`
 	// SigningKeyFile is the path to the 32-byte seed of the server's

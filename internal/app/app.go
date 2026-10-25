@@ -18,6 +18,7 @@ import (
 	"github.com/clavis/clavis/internal/agentid"
 	"github.com/clavis/clavis/internal/config"
 	"github.com/clavis/clavis/internal/crypto"
+	"github.com/clavis/clavis/internal/e2e"
 	"github.com/clavis/clavis/internal/fuse"
 	"github.com/clavis/clavis/internal/interceptor"
 	"github.com/clavis/clavis/internal/keyclient"
@@ -99,7 +100,11 @@ func Run(ctx context.Context, cfgPath string) error {
 		if serverNonce, err = state.ServerNonceBytes(); err != nil {
 			return err
 		}
-		readerKeys = serverReaderKeys{client: client}
+		readerKeys = routerReaderKeys{
+			client:    client,
+			relayAddr: cfg.Server.RelayAddr,
+			agentID:   cfg.Agent.ID,
+		}
 		logger.Info("using key server", "url", cfg.Server.URL, "agent_id", state.AgentID)
 	} else if cfg.Token.ModulePath != "" {
 		backend, err := token.Open(token.Config{
@@ -158,14 +163,36 @@ func Run(ctx context.Context, cfgPath string) error {
 	return nil
 }
 
-// serverReaderKeys adapts keyclient.Client to fuse.ReaderKeyProvider.
-type serverReaderKeys struct {
-	client *keyclient.Client
+// routerReaderKeys adapts keyclient.Client and the e2e relay to
+// fuse.ReaderKeyProvider. Proxy-mode documents resolve the reader key
+// through the server; e2e-mode documents exchange it directly through the
+// relay (the server only organizes the rendezvous).
+type routerReaderKeys struct {
+	client    *keyclient.Client
+	relayAddr string
+	agentID   string
 }
 
 // ReaderKey implements fuse.ReaderKeyProvider.
-func (s serverReaderKeys) ReaderKey(ctx context.Context, ownerKeyID [16]byte) ([]byte, []byte, error) {
-	m, err := s.client.ReaderKey(ctx, hex.EncodeToString(ownerKeyID[:]))
+func (r routerReaderKeys) ReaderKey(ctx context.Context, ownerKeyID [16]byte, mode crypto.Mode) ([]byte, []byte, error) {
+	ownerHex := hex.EncodeToString(ownerKeyID[:])
+	if mode == crypto.ModeE2E {
+		if r.relayAddr == "" {
+			return nil, nil, errors.New("e2e mode requires server.relay_addr")
+		}
+		session, err := r.client.CreateE2ESession(ctx, ownerHex, r.agentID)
+		if err != nil {
+			return nil, nil, err
+		}
+		conn, err := e2e.Dial(r.relayAddr, session.SessionID, e2e.RolePeer, r.agentID)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer func() { _ = conn.Close() }()
+		return e2e.PeerReceive(conn)
+	}
+
+	m, err := r.client.ReaderKey(ctx, ownerHex)
 	return m.ReaderKey, m.PubSig, err
 }
 

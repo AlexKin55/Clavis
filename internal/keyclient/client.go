@@ -204,6 +204,13 @@ type ReaderMaterial struct {
 	PubSig    []byte
 }
 
+// E2ESession is a rendezvous created for the direct key exchange.
+type E2ESession struct {
+	SessionID   string `json:"session_id"`
+	OwnerKeyID  string `json:"owner_key_id"`
+	PeerAgentID string `json:"peer_agent_id"`
+}
+
 // ReaderKey requests the read-only wrapper key (AS) and the owner's
 // public signature key.
 func (c *Client) ReaderKey(ctx context.Context, ownerKeyID string) (ReaderMaterial, error) {
@@ -244,7 +251,41 @@ func (c *Client) ReaderKey(ctx context.Context, ownerKeyID string) (ReaderMateri
 	return ReaderMaterial{ReaderKey: as, PubSig: pub}, nil
 }
 
-// serverError is a non-OK Key Server response.
+// CreateE2ESession asks the Key Server for a rendezvous point for the
+// direct (end-to-end) key exchange.
+func (c *Client) CreateE2ESession(ctx context.Context, ownerKeyID, peerAgentID string) (*E2ESession, error) {
+	body, err := json.Marshal(map[string]string{
+		"owner_key_id":  ownerKeyID,
+		"peer_agent_id": peerAgentID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: marshal e2e session: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/v1/e2e/sessions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: build e2e session: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.agentID != "" {
+		httpReq.Header.Set("X-Agent-ID", c.agentID)
+	}
+	resp, err := c.httpc.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("keyclient: e2e session failed: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return nil, newServerError(resp.StatusCode, resp.Body)
+	}
+	var out E2ESession
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("keyclient: decode e2e session: %w", err)
+	}
+	return &out, nil
+}
+
 type serverError struct {
 	status int
 	body   string

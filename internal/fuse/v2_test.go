@@ -19,7 +19,7 @@ type staticReaderProvider map[[16]byte]struct {
 	pub []byte
 }
 
-func (p staticReaderProvider) ReaderKey(_ context.Context, owner [16]byte) ([]byte, []byte, error) {
+func (p staticReaderProvider) ReaderKey(_ context.Context, owner [16]byte, _ crypto.Mode) ([]byte, []byte, error) {
 	e, ok := p[owner]
 	if !ok {
 		return nil, nil, errors.New("owner not found")

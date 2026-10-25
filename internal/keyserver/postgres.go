@@ -39,6 +39,16 @@ func (p *PostgresStore) Close() {
 	p.pool.Close()
 }
 
+// CreateE2ESession keeps rendezvous records in memory (session-level data).
+func (p *PostgresStore) CreateE2ESession(ownerKeyID, peerAgentID string) (E2ESession, error) {
+	return p.MemoryStore.CreateE2ESession(ownerKeyID, peerAgentID)
+}
+
+// GetE2ESession returns the rendezvous from memory.
+func (p *PostgresStore) GetE2ESession(sessionID string) (E2ESession, bool) {
+	return p.MemoryStore.GetE2ESession(sessionID)
+}
+
 // EnsureAgent registers the agent id if unknown.
 func (p *PostgresStore) EnsureAgent(id string) {
 	if _, err := p.pool.Exec(context.Background(),

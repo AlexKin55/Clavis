@@ -46,6 +46,8 @@ server:
   key_file: "/etc/clavis/agent-key.pem"
   # Request timeout in seconds.
   timeout_seconds: 10
+  # Key Server relay address for e2e-mode documents (direct key exchange).
+  relay_addr: "127.0.0.1:8444"
 
 fuse:
   # Directory where the encrypted files physically reside (must exist).

@@ -50,6 +50,14 @@ type AuditEntry struct {
 	Reason   string
 }
 
+// E2ESession describes a meeting point created by the reader agent.
+type E2ESession struct {
+	SessionID   string
+	OwnerKeyID  string
+	PeerAgentID string
+	CreatedAt   time.Time
+}
+
 // Store is the Key Server persistence surface. Implementations: MemoryStore
 // (tests/dev) and PostgresStore (production).
 type Store interface {
@@ -72,6 +80,10 @@ type Store interface {
 	// --- audit ---
 	AddAudit(e AuditEntry)
 	ListAudit(limit int) []AuditEntry
+
+	// --- e2e sessions ---
+	CreateE2ESession(ownerKeyID, peerAgentID string) (E2ESession, error)
+	GetE2ESession(sessionID string) (E2ESession, bool)
 }
 
 // MemoryStore is the default in-memory implementation.
@@ -81,6 +93,7 @@ type MemoryStore struct {
 	agents    map[string]*AgentRecord // key: AgentID
 	byOwner   map[string]string       // ownerKeyID -> AgentID
 	audit     []AuditEntry
+	e2e       map[string]*E2ESession // sessionID -> session
 }
 
 // NewMemoryStore creates an empty in-memory store.
@@ -89,6 +102,7 @@ func NewMemoryStore() *MemoryStore {
 		documents: make(map[string]*Document),
 		agents:    make(map[string]*AgentRecord),
 		byOwner:   make(map[string]string),
+		e2e:       make(map[string]*E2ESession),
 	}
 }
 
@@ -248,6 +262,36 @@ func (s *MemoryStore) AddAudit(e AuditEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.audit = append(s.audit, e)
+}
+
+// CreateE2ESession records a rendezvous for the e2e relay.
+func (s *MemoryStore) CreateE2ESession(ownerKeyID, peerAgentID string) (E2ESession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		return E2ESession{}, fmt.Errorf("keyserver: session id: %w", err)
+	}
+	session := E2ESession{
+		SessionID:   "e2e-" + fmt.Sprintf("%x", buf),
+		OwnerKeyID:  ownerKeyID,
+		PeerAgentID: peerAgentID,
+		CreatedAt:   time.Now(),
+	}
+	s.e2e[session.SessionID] = &session
+	return session, nil
+}
+
+// GetE2ESession returns the rendezvous by id.
+func (s *MemoryStore) GetE2ESession(sessionID string) (E2ESession, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	session, ok := s.e2e[sessionID]
+	if !ok {
+		return E2ESession{}, false
+	}
+	return *session, true
 }
 
 // ListAudit returns up to limit latest audit entries (most recent first).

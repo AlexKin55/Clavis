@@ -29,11 +29,12 @@ import (
 const HeaderSize = crypto.HeaderSize
 
 // ReaderKeyProvider resolves the owner's read-only key material for v2
-// documents (AS + owner public signature key).
+// documents (AS + owner public signature key). The mode tells the provider
+// how to resolve it: proxy (via the server) or e2e (direct exchange).
 type ReaderKeyProvider interface {
 	// ReaderKey returns the read-key (AS) and the owner's Ed25519 public
-	// key for the given owner identifier.
-	ReaderKey(ctx context.Context, ownerKeyID [16]byte) (readKey, ownerPub []byte, err error)
+	// key for the given owner identifier and sharing mode.
+	ReaderKey(ctx context.Context, ownerKeyID [16]byte, mode crypto.Mode) (readKey, ownerPub []byte, err error)
 }
 
 // secureFile is an opened protected file. Read and Write operate on the
@@ -467,7 +468,7 @@ func (r *SecureRoot) openProtectedFileV2(ctx context.Context, osf *os.File, _ st
 	if r.cfg.ReaderKeys == nil {
 		return nil, errors.New("fuse: reader key provider not configured")
 	}
-	readKey, ownerPub, err := r.cfg.ReaderKeys.ReaderKey(ctx, header.OwnerKeyID)
+	readKey, ownerPub, err := r.cfg.ReaderKeys.ReaderKey(ctx, header.OwnerKeyID, header.Mode)
 	if err != nil {
 		return nil, err
 	}

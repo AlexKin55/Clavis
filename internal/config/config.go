@@ -98,6 +98,9 @@ type ServerConfig struct {
 	KeyFile string `yaml:"key_file"`
 	// TimeoutSeconds bounds each Key Server request.
 	TimeoutSeconds int `yaml:"timeout_seconds"`
+	// RelayAddr is the address of the Key Server e2e relay (e.g.
+	// "keys.example.com:8444"). Required only for e2e-mode documents.
+	RelayAddr string `yaml:"relay_addr"`
 }
 
 // LogConfig holds logging parameters.

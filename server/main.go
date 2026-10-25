@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/clavis/clavis/internal/e2e"
 	"github.com/clavis/clavis/internal/keyclient"
 	"github.com/clavis/clavis/internal/keyserver"
 	"github.com/clavis/clavis/internal/version"
@@ -62,6 +63,21 @@ func run() int {
 		}
 		defer pgStore.Close()
 		store = pgStore
+	}
+
+	// e2e relay: a raw pipe between agents, transparent to the server.
+	var relay *e2e.RelayServer
+	if cfg.RelayListen != "" {
+		relay, err = e2e.NewRelayServer(cfg.RelayListen)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "relay:", err)
+			return 1
+		}
+		defer func() { _ = relay.Close() }()
+		go func() {
+			_ = relay.Serve()
+		}()
+		fmt.Printf("e2e relay listening on %s\n", relay.Addr())
 	}
 
 	handler := keyserver.NewServer(keyserver.Config{

@@ -11,6 +11,10 @@ default_ttl_seconds: 3600
 # PostgreSQL connection (agents + audit). Empty uses the in-memory store.
 db_url: ""
 
+# e2e relay listener: a transparent pipe between agents for direct key
+# exchange. Empty disables end-to-end mode.
+relay_listen: "127.0.0.1:8444"
+
 # Server Ed25519 seed file (created on first run, 0600). Its public key S
 # participates in the reader-key (AS) derivation during registration.
 signing_key_file: "/var/lib/clavis/server-key.seed"

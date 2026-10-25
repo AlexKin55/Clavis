@@ -67,6 +67,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/agents/reader-key", s.handleSetReaderKey)
 	mux.HandleFunc("GET /api/v1/agents/{owner_key_id}/reader-key", s.handleGetReaderKey)
 
+	// e2e rendezvous.
+	mux.HandleFunc("POST /api/v1/e2e/sessions", s.handleCreateE2ESession)
+
 	return mux
 }
 
@@ -360,6 +363,28 @@ func (s *Server) handleGetReaderKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"reader_key": hex.EncodeToString(rec.ReaderKey),
 		"pub_sig":    hex.EncodeToString(rec.PubSig),
+	})
+}
+
+// handleCreateE2ESession creates a rendezvous for the direct key exchange.
+func (s *Server) handleCreateE2ESession(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OwnerKeyID  string `json:"owner_key_id"`
+		PeerAgentID string `json:"peer_agent_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.OwnerKeyID == "" {
+		writeError(w, http.StatusBadRequest, "owner_key_id is required")
+		return
+	}
+	session, err := s.store.CreateE2ESession(req.OwnerKeyID, req.PeerAgentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"session_id":    session.SessionID,
+		"owner_key_id":  session.OwnerKeyID,
+		"peer_agent_id": session.PeerAgentID,
 	})
 }
 
