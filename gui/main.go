@@ -16,12 +16,8 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -34,7 +30,6 @@ import (
 	"github.com/clavis/clavis/internal/crypto"
 	"github.com/clavis/clavis/internal/gui"
 	"github.com/clavis/clavis/internal/mode"
-	"github.com/clavis/clavis/internal/notify"
 )
 
 func main() {
@@ -112,67 +107,30 @@ func (f fyneFlow) ShowError(err error) {
 	dialog.ShowError(err, f.w)
 }
 
-type notification struct {
-	ID   int64       `json:"id"`
-	Kind notify.Kind `json:"kind"`
-	Text string      `json:"text"`
-	Time int64       `json:"time"`
+// fyneNotifier adapts the notification presenter to Fyne system
+// notifications (see internal/gui.FetchNewNotifications).
+type fyneNotifier struct {
+	a fyne.App
+}
+
+// ShowNotification implements gui.NotifyPresenter.
+func (f fyneNotifier) ShowNotification(title, content string) {
+	f.a.SendNotification(&fyne.Notification{Title: title, Content: content})
 }
 
 // pollNotifications fetches new notifications from the agent every few
 // seconds and shows each of them as a system notification. The last seen
-// id prevents duplicates.
+// id (kept in the flow) prevents duplicates.
 func pollNotifications(a fyne.App, base string) {
 	const pollInterval = 3 * time.Second
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
+	client := agentapi.NewClient(base)
+	presenter := fyneNotifier{a: a}
 	var lastID int64
 	for range ticker.C {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/notifications", nil)
-		if err != nil {
-			cancel()
-			continue
-		}
-		resp, err := http.DefaultClient.Do(req)
-		cancel()
-		if err != nil {
-			continue // agent is not running (yet) — retry on the next tick
-		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		_ = resp.Body.Close()
-		if readErr != nil {
-			continue
-		}
-
-		var out struct {
-			Notifications []notification `json:"notifications"`
-		}
-		if json.Unmarshal(body, &out) != nil {
-			continue
-		}
-		for _, n := range out.Notifications {
-			if n.ID <= lastID {
-				continue
-			}
-			lastID = n.ID
-			a.SendNotification(&fyne.Notification{
-				Title:   notificationTitle(n.Kind),
-				Content: n.Text,
-			})
-		}
-	}
-}
-
-// notificationTitle picks a concise title for the notification kind.
-func notificationTitle(k notify.Kind) string {
-	switch k {
-	case notify.KindOffline:
-		return "Clavis: нет доступа к серверам ключей"
-	case notify.KindKeyMissing:
-		return "Clavis: не найден ключ для документа"
-	default:
-		return "Clavis"
+		// Errors (agent not running yet) are ignored: retry next tick.
+		lastID, _, _ = gui.FetchNewNotifications(client, presenter, lastID)
 	}
 }

@@ -32,11 +32,18 @@ type FlowEvents interface {
 }
 
 // AgentAPI is the slice of the agent's localhost API the flow needs:
-// listing pending e2e requests and approving them. The HTTP client in
-// internal/agentapi implements it.
+// listing pending e2e requests, approving them and reading notifications.
+// The HTTP client in internal/agentapi implements it.
 type AgentAPI interface {
 	PendingE2ESessions(ctx context.Context) ([]agentapi.PendingE2ESession, error)
 	ApproveE2ESession(ctx context.Context, sessionID string) error
+	Notifications(ctx context.Context) ([]agentapi.Notification, error)
+}
+
+// NotifyPresenter shows a single notification to the user (a system
+// notification or a dialog), with the title already resolved.
+type NotifyPresenter interface {
+	ShowNotification(title, content string)
 }
 
 // CheckPendingRequests fetches the end-to-end requests awaiting the
@@ -72,4 +79,43 @@ func CheckPendingRequests(api AgentAPI, ui FlowEvents) (int, error) {
 		ui.ShowInfo("Ключ доступа передан.")
 	})
 	return len(sessions), nil
+}
+
+// FetchNewNotifications fetches the agent's recent notifications and
+// presents every one newer than lastID once (deduplicated by id). It
+// returns the new last seen id and the number of displayed notifications.
+// A notification with kind "key_missing" means no key could be found to
+// decrypt a document (a possible offline agent); "offline" means the
+// key servers were unreachable.
+func FetchNewNotifications(api AgentAPI, presenter NotifyPresenter, lastID int64) (int64, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	notes, err := api.Notifications(ctx)
+	if err != nil {
+		return lastID, 0, err
+	}
+	shown := 0
+	for _, n := range notes {
+		if n.ID <= lastID {
+			continue
+		}
+		lastID = n.ID
+		presenter.ShowNotification(notificationTitle(n.Kind), n.Text)
+		shown++
+	}
+	return lastID, shown, nil
+}
+
+// notificationTitle resolves the user-facing title for a notification
+// kind ("key_missing", "offline", else generic).
+func notificationTitle(kind string) string {
+	switch kind {
+	case "key_missing":
+		return "Clavis: не найден ключ для документа"
+	case "offline":
+		return "Clavis: нет доступа к серверам ключей"
+	default:
+		return "Clavis"
+	}
 }

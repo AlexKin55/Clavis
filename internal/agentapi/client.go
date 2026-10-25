@@ -22,6 +22,16 @@ type PendingE2ESession struct {
 	PeerAgent string `json:"peer_agent_id"`
 }
 
+// Notification mirrors the agent's /api/notifications response item.
+// Kind is one of "info", "key_missing" (no key to decrypt a document) or
+// "offline" (the key servers could not be reached).
+type Notification struct {
+	ID   int64  `json:"id"`
+	Kind string `json:"kind"`
+	Text string `json:"text"`
+	Time int64  `json:"time"`
+}
+
 // Client talks to the agent's localhost UI API.
 type Client struct {
 	base string
@@ -67,6 +77,37 @@ func (c *Client) PendingE2ESessions(ctx context.Context) ([]PendingE2ESession, e
 		out.Pending = []PendingE2ESession{}
 	}
 	return out.Pending, nil
+}
+
+// Notifications lists the most recent GUI notifications (e.g. a document
+// could not be opened: no key material, or the key servers are offline).
+func (c *Client) Notifications(ctx context.Context) ([]Notification, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/notifications", nil)
+	if err != nil {
+		return nil, fmt.Errorf("agentapi: build notifications request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("agentapi: notifications request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("agentapi: notifications: HTTP %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("agentapi: read notifications: %w", err)
+	}
+	var out struct {
+		Notifications []Notification `json:"notifications"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("agentapi: decode notifications: %w", err)
+	}
+	if out.Notifications == nil {
+		out.Notifications = []Notification{}
+	}
+	return out.Notifications, nil
 }
 
 // ApproveE2ESession grants the end-to-end key to the peer by approving
