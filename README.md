@@ -17,6 +17,7 @@ clavis/
 ├── internal/
 │   ├── app/                # initialization, graceful shutdown, health
 │   ├── config/             # settings.yaml loading + validation
+│   ├── crypto/             # file header (UUID/nonce), AES-CTR, key getters
 │   ├── logging/            # slog + rotation (lumberjack)
 │   └── version/            # build version (ldflags)
 ├── scripts/                # helper scripts
