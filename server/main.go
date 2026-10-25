@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -55,9 +56,18 @@ func run() int {
 		return 1
 	}
 
-	var store keyserver.Store = keyserver.NewMemoryStore()
+	// The server identity is generated once at install time (like the
+	// agent id) and attributed to every row this instance writes in the
+	// shared PostgreSQL database.
+	serverID, err := loadOrCreateServerID(cfg.IDFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "server id:", err)
+		return 1
+	}
+
+	var store keyserver.Store = keyserver.NewMemoryStore(serverID)
 	if cfg.DBURL != "" {
-		pgStore, err := keyserver.NewPostgresStore(context.Background(), cfg.DBURL)
+		pgStore, err := keyserver.NewPostgresStore(context.Background(), cfg.DBURL, serverID)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "db:", err)
 			return 1
@@ -133,7 +143,7 @@ func run() int {
 		go monitorPeers(ctx, peers, interval, store)
 	}
 
-	fmt.Printf("clavis key server listening on %s\n", cfg.Listen)
+	fmt.Printf("clavis key server listening on %s (server id %s)\n", cfg.Listen, serverID)
 
 	select {
 	case <-ctx.Done():
@@ -225,6 +235,38 @@ func loadOrCreateServerKey(path string) (ed25519.PrivateKey, error) {
 		}
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+// newServerID returns a random server identity ("server-<12 hex>"),
+// mirroring the random agent id generated at agent install time.
+func newServerID() string {
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("server-%d", time.Now().UnixNano())
+	}
+	return "server-" + hex.EncodeToString(buf)
+}
+
+// loadOrCreateServerID loads the server identity from idFile or, on the
+// first start, generates and persists one (mode 0600). The id attributes
+// every row this instance writes in the shared PostgreSQL tables.
+func loadOrCreateServerID(path string) (string, error) {
+	if path != "" {
+		if data, err := os.ReadFile(path); err == nil {
+			if id := strings.TrimSpace(string(data)); id != "" {
+				return id, nil
+			}
+		}
+		id := newServerID()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return "", fmt.Errorf("create server id dir: %w", err)
+		}
+		if err := os.WriteFile(path, []byte(id+"\n"), 0o600); err != nil {
+			return "", fmt.Errorf("store server id: %w", err)
+		}
+		return id, nil
+	}
+	return newServerID(), nil
 }
 
 func serverTLS(cfg TLSConfig) (*tls.Config, error) {

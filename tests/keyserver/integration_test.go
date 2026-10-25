@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,33 @@ func newTestServer() *httptest.Server {
 	}, keyserver.NewMemoryStore())
 	ts := httptest.NewServer(srv.Handler())
 	return ts
+}
+
+// TestAuditServerAttribution verifies that audit records expose the id
+// of the server instance that produced them.
+func TestAuditServerAttribution(t *testing.T) {
+	store := keyserver.NewMemoryStore("server-e2e-1")
+	keyServer := keyserver.NewServer(keyserver.Config{
+		DefaultPolicies: keyclient.Policies{ReadWrite: true},
+		DefaultTTL:      time.Hour,
+		ServerKey:       serverPubKey(),
+	}, store)
+	ts := httptest.NewServer(keyServer.Handler())
+	defer ts.Close()
+
+	if resp, body := doJSON(t, ts, http.MethodPost, "/api/v1/keys/issue", testAgent, keyclient.IssueRequest{
+		DocumentUUID: "11111111-2222-3333-4444-555555555555",
+	}); resp.StatusCode != http.StatusOK {
+		t.Fatalf("issue status = %d, body = %s", resp.StatusCode, body)
+	}
+
+	resp, body := doJSON(t, ts, http.MethodGet, "/api/v1/audit?limit=10", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("audit status = %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "server-e2e-1") {
+		t.Errorf("audit body = %s, want server_id server-e2e-1", body)
+	}
 }
 
 func doJSON(t *testing.T, srv *httptest.Server, method, path, agentID string, body any) (*http.Response, []byte) {

@@ -20,12 +20,16 @@ func randRead(b []byte) (int, error) { return rand.Read(b) }
 // policies and peer health. Because every server instance writes to the
 // same database, the cluster is automatically consistent.
 type PostgresStore struct {
-	pool *pgxpool.Pool
+	pool     *pgxpool.Pool
+	serverID string
 }
 
 // NewPostgresStore connects to PostgreSQL, ensures the schema and returns
-// the store.
-func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
+// the store. The optional serverID (the running Key Server instance id,
+// generated at install time) is stamped into every row the store writes,
+// so the shared tables attribute each record to the instance that
+// produced it.
+func NewPostgresStore(ctx context.Context, dsn string, serverID ...string) (*PostgresStore, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("keyserver: connect postgres: %w", err)
@@ -38,7 +42,11 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 		pool.Close()
 		return nil, fmt.Errorf("keyserver: init schema: %w", err)
 	}
-	return &PostgresStore{pool: pool}, nil
+	id := ""
+	if len(serverID) > 0 {
+		id = serverID[0]
+	}
+	return &PostgresStore{pool: pool, serverID: id}, nil
 }
 
 // Close releases the connection pool.
@@ -49,9 +57,9 @@ func (p *PostgresStore) Close() { p.pool.Close() }
 // EnsureAgent registers the agent id if unknown.
 func (p *PostgresStore) EnsureAgent(id string) {
 	_, _ = p.pool.Exec(context.Background(),
-		`INSERT INTO clavis_agents (agent_id, pub_sig, owner_key_id, nonce_server)
-		 VALUES ($1, ''::bytea, $1, ''::bytea)
-		 ON CONFLICT (agent_id) DO NOTHING`, id)
+		`INSERT INTO clavis_agents (agent_id, pub_sig, owner_key_id, nonce_server, server_id)
+		 VALUES ($1, ''::bytea, $1, ''::bytea, $2)
+		 ON CONFLICT (agent_id) DO NOTHING`, id, p.serverID)
 }
 
 // AgentRevoked reports whether the agent was revoked.
@@ -76,11 +84,12 @@ func (p *PostgresStore) RegisterAgent(rec AgentRecord) error {
 		return fmt.Errorf("keyserver: agent_id and owner_key_id are required")
 	}
 	_, err := p.pool.Exec(context.Background(),
-		`INSERT INTO clavis_agents (agent_id, device_id, pub_sig, owner_key_id, nonce_server)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO clavis_agents (agent_id, device_id, pub_sig, owner_key_id, nonce_server, server_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (owner_key_id)
-		 DO UPDATE SET device_id = EXCLUDED.device_id, nonce_server = EXCLUDED.nonce_server`,
-		rec.AgentID, rec.DeviceID, rec.PubSig, rec.OwnerKeyID, rec.NonceServer)
+		 DO UPDATE SET device_id = EXCLUDED.device_id, nonce_server = EXCLUDED.nonce_server,
+		               server_id = EXCLUDED.server_id`,
+		rec.AgentID, rec.DeviceID, rec.PubSig, rec.OwnerKeyID, rec.NonceServer, p.serverID)
 	if err != nil {
 		return fmt.Errorf("keyserver: register agent: %w", err)
 	}
@@ -89,12 +98,12 @@ func (p *PostgresStore) RegisterAgent(rec AgentRecord) error {
 
 // AgentByID returns the agent record.
 func (p *PostgresStore) AgentByID(id string) (*AgentRecord, bool) {
-	return p.scanAgent(`SELECT agent_id, device_id, pub_sig, owner_key_id, nonce_server, reader_key, revoked FROM clavis_agents WHERE agent_id = $1`, id)
+	return p.scanAgent(`SELECT agent_id, device_id, pub_sig, owner_key_id, nonce_server, reader_key, revoked, server_id FROM clavis_agents WHERE agent_id = $1`, id)
 }
 
 // AgentByOwnerKeyID returns the agent by its owner identifier.
 func (p *PostgresStore) AgentByOwnerKeyID(ownerKeyID string) (*AgentRecord, bool) {
-	return p.scanAgent(`SELECT agent_id, device_id, pub_sig, owner_key_id, nonce_server, reader_key, revoked FROM clavis_agents WHERE owner_key_id = $1`, ownerKeyID)
+	return p.scanAgent(`SELECT agent_id, device_id, pub_sig, owner_key_id, nonce_server, reader_key, revoked, server_id FROM clavis_agents WHERE owner_key_id = $1`, ownerKeyID)
 }
 
 func (p *PostgresStore) scanAgent(query, arg string) (*AgentRecord, bool) {
@@ -105,7 +114,7 @@ func (p *PostgresStore) scanAgent(query, arg string) (*AgentRecord, bool) {
 	var readerKey []byte
 	err := p.pool.QueryRow(ctx, query, arg).Scan(
 		&rec.AgentID, &rec.DeviceID, &rec.PubSig, &rec.OwnerKeyID,
-		&rec.NonceServer, &readerKey, &rec.Revoked,
+		&rec.NonceServer, &readerKey, &rec.Revoked, &rec.ServerID,
 	)
 	if err != nil {
 		return nil, false
@@ -151,10 +160,11 @@ func (p *PostgresStore) EnsureDocument(uuid string, defaultPolicies keyclient.Po
 		ttlSec = 3600
 	}
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO clavis_documents (uuid, key, policies, ttl_seconds)
-		 VALUES ($1, $2, $3::jsonb, $4)
-		 ON CONFLICT (uuid) DO UPDATE SET owner_key_id = EXCLUDED.owner_key_id`,
-		uuid, key, policies, ttlSec)
+		`INSERT INTO clavis_documents (uuid, key, policies, ttl_seconds, server_id)
+		 VALUES ($1, $2, $3::jsonb, $4, $5)
+		 ON CONFLICT (uuid) DO UPDATE SET owner_key_id = EXCLUDED.owner_key_id,
+		               server_id = EXCLUDED.server_id`,
+		uuid, key, policies, ttlSec, p.serverID)
 	if err != nil {
 		return nil, fmt.Errorf("keyserver: ensure document: %w", err)
 	}
@@ -208,9 +218,9 @@ func (p *PostgresStore) SetPolicy(uuid string, policies keyclient.Policies, ttl 
 // RevokeDocument revokes a document for all agents.
 func (p *PostgresStore) RevokeDocument(uuid string) {
 	_, _ = p.pool.Exec(context.Background(),
-		`INSERT INTO clavis_documents (uuid, key, policies, ttl_seconds, revoked)
-		 VALUES ($1, ''::bytea, '{}'::jsonb, 3600, true)
-		 ON CONFLICT (uuid) DO UPDATE SET revoked = true`, uuid)
+		`INSERT INTO clavis_documents (uuid, key, policies, ttl_seconds, revoked, server_id)
+		 VALUES ($1, ''::bytea, '{}'::jsonb, 3600, true, $2)
+		 ON CONFLICT (uuid) DO UPDATE SET revoked = true`, uuid, p.serverID)
 }
 
 // Documents lists all registered documents.
@@ -254,11 +264,12 @@ func (p *PostgresStore) CreateE2ESession(ownerKeyID, peerAgentID string) (E2ESes
 		OwnerKeyID:  ownerKeyID,
 		PeerAgentID: peerAgentID,
 		CreatedAt:   time.Now(),
+		ServerID:    p.serverID,
 	}
 	_, err := p.pool.Exec(ctx,
-		`INSERT INTO clavis_e2e_sessions (session_id, owner_key_id, peer_agent_id)
-		 VALUES ($1, $2, $3) ON CONFLICT (session_id) DO NOTHING`,
-		session.SessionID, ownerKeyID, peerAgentID)
+		`INSERT INTO clavis_e2e_sessions (session_id, owner_key_id, peer_agent_id, server_id)
+		 VALUES ($1, $2, $3, $4) ON CONFLICT (session_id) DO NOTHING`,
+		session.SessionID, ownerKeyID, peerAgentID, p.serverID)
 	if err != nil {
 		return E2ESession{}, fmt.Errorf("keyserver: create e2e session: %w", err)
 	}
@@ -272,8 +283,8 @@ func (p *PostgresStore) GetE2ESession(sessionID string) (E2ESession, bool) {
 
 	var s E2ESession
 	err := p.pool.QueryRow(ctx,
-		`SELECT owner_key_id, peer_agent_id FROM clavis_e2e_sessions WHERE session_id = $1`, sessionID).
-		Scan(&s.OwnerKeyID, &s.PeerAgentID)
+		`SELECT owner_key_id, peer_agent_id, server_id FROM clavis_e2e_sessions WHERE session_id = $1`, sessionID).
+		Scan(&s.OwnerKeyID, &s.PeerAgentID, &s.ServerID)
 	if err != nil {
 		return E2ESession{}, false
 	}
@@ -287,7 +298,7 @@ func (p *PostgresStore) GetE2ESessionsByOwner(ownerKeyID string) []E2ESession {
 	defer cancel()
 
 	rows, err := p.pool.Query(ctx,
-		`SELECT session_id, owner_key_id, peer_agent_id FROM clavis_e2e_sessions WHERE owner_key_id = $1`, ownerKeyID)
+		`SELECT session_id, owner_key_id, peer_agent_id, server_id FROM clavis_e2e_sessions WHERE owner_key_id = $1`, ownerKeyID)
 	if err != nil {
 		return nil
 	}
@@ -296,7 +307,7 @@ func (p *PostgresStore) GetE2ESessionsByOwner(ownerKeyID string) []E2ESession {
 	var out []E2ESession
 	for rows.Next() {
 		var s E2ESession
-		if err := rows.Scan(&s.SessionID, &s.OwnerKeyID, &s.PeerAgentID); err != nil {
+		if err := rows.Scan(&s.SessionID, &s.OwnerKeyID, &s.PeerAgentID, &s.ServerID); err != nil {
 			continue
 		}
 		out = append(out, s)
@@ -311,15 +322,17 @@ func (p *PostgresStore) RecordPeerStatus(peer string, alive bool) {
 	now := time.Now()
 	if alive {
 		_, _ = p.pool.Exec(context.Background(),
-			`INSERT INTO clavis_peer_state (peer, last_seen, last_ok) VALUES ($1, $2, $2)
-			 ON CONFLICT (peer) DO UPDATE SET last_seen = EXCLUDED.last_seen, last_ok = EXCLUDED.last_ok`,
-			peer, now)
+			`INSERT INTO clavis_peer_state (peer, last_seen, last_ok, server_id) VALUES ($1, $2, $2, $3)
+			 ON CONFLICT (peer) DO UPDATE SET last_seen = EXCLUDED.last_seen, last_ok = EXCLUDED.last_ok,
+			               server_id = EXCLUDED.server_id`,
+			peer, now, p.serverID)
 		return
 	}
 	_, _ = p.pool.Exec(context.Background(),
-		`INSERT INTO clavis_peer_state (peer, last_seen) VALUES ($1, $2)
-		 ON CONFLICT (peer) DO UPDATE SET last_seen = EXCLUDED.last_seen`,
-		peer, now)
+		`INSERT INTO clavis_peer_state (peer, last_seen, server_id) VALUES ($1, $2, $3)
+		 ON CONFLICT (peer) DO UPDATE SET last_seen = EXCLUDED.last_seen,
+		               server_id = EXCLUDED.server_id`,
+		peer, now, p.serverID)
 }
 
 // PeerStates returns the observed health states of all peers.
@@ -327,7 +340,7 @@ func (p *PostgresStore) PeerStates() []PeerState {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	rows, err := p.pool.Query(ctx, `SELECT peer, last_seen, COALESCE(last_ok, last_seen) FROM clavis_peer_state`)
+	rows, err := p.pool.Query(ctx, `SELECT peer, last_seen, COALESCE(last_ok, last_seen), server_id FROM clavis_peer_state`)
 	if err != nil {
 		return nil
 	}
@@ -336,7 +349,7 @@ func (p *PostgresStore) PeerStates() []PeerState {
 	var out []PeerState
 	for rows.Next() {
 		var st PeerState
-		if err := rows.Scan(&st.Peer, &st.LastSeen, &st.LastOK); err != nil {
+		if err := rows.Scan(&st.Peer, &st.LastSeen, &st.LastOK, &st.ServerID); err != nil {
 			continue
 		}
 		out = append(out, st)
@@ -349,8 +362,8 @@ func (p *PostgresStore) PeerStates() []PeerState {
 // AddAudit appends an audit record to PostgreSQL.
 func (p *PostgresStore) AddAudit(e AuditEntry) {
 	_, _ = p.pool.Exec(context.Background(),
-		`INSERT INTO clavis_audit (agent_id, document, allowed, reason) VALUES ($1, $2, $3, $4)`,
-		e.AgentID, e.Document, e.Allowed, e.Reason)
+		`INSERT INTO clavis_audit (agent_id, document, allowed, reason, server_id) VALUES ($1, $2, $3, $4, $5)`,
+		e.AgentID, e.Document, e.Allowed, e.Reason, p.serverID)
 }
 
 // ListAudit returns up to limit latest audit entries.
@@ -362,7 +375,7 @@ func (p *PostgresStore) ListAudit(limit int) []AuditEntry {
 	defer cancel()
 
 	rows, err := p.pool.Query(ctx,
-		`SELECT ts, agent_id, document, allowed, reason FROM clavis_audit ORDER BY ts DESC LIMIT $1`, limit)
+		`SELECT ts, agent_id, document, allowed, reason, server_id FROM clavis_audit ORDER BY ts DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil
 	}
@@ -371,7 +384,7 @@ func (p *PostgresStore) ListAudit(limit int) []AuditEntry {
 	var out []AuditEntry
 	for rows.Next() {
 		var e AuditEntry
-		if err := rows.Scan(&e.Time, &e.AgentID, &e.Document, &e.Allowed, &e.Reason); err != nil {
+		if err := rows.Scan(&e.Time, &e.AgentID, &e.Document, &e.Allowed, &e.Reason, &e.ServerID); err != nil {
 			continue
 		}
 		out = append(out, e)
@@ -390,6 +403,7 @@ CREATE TABLE IF NOT EXISTS clavis_agents (
 	nonce_server bytea NOT NULL,
 	reader_key   bytea,
 	revoked      boolean NOT NULL DEFAULT false,
+	server_id    text NOT NULL DEFAULT '',
 	created_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS clavis_documents (
@@ -399,18 +413,21 @@ CREATE TABLE IF NOT EXISTS clavis_documents (
 	policies     jsonb NOT NULL DEFAULT '{}'::jsonb,
 	ttl_seconds  bigint NOT NULL DEFAULT 3600,
 	revoked      boolean NOT NULL DEFAULT false,
+	server_id    text NOT NULL DEFAULT '',
 	created_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS clavis_e2e_sessions (
-	session_id   text PRIMARY KEY,
-	owner_key_id text NOT NULL,
+	session_id    text PRIMARY KEY,
+	owner_key_id  text NOT NULL,
 	peer_agent_id text NOT NULL DEFAULT '',
-	created_at   timestamptz NOT NULL DEFAULT now()
+	server_id     text NOT NULL DEFAULT '',
+	created_at    timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS clavis_peer_state (
 	peer      text PRIMARY KEY,
 	last_seen timestamptz NOT NULL,
-	last_ok   timestamptz
+	last_ok   timestamptz,
+	server_id text NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS clavis_audit (
 	id       bigserial PRIMARY KEY,
@@ -418,8 +435,17 @@ CREATE TABLE IF NOT EXISTS clavis_audit (
 	agent_id text NOT NULL DEFAULT '',
 	document text NOT NULL DEFAULT '',
 	allowed  boolean NOT NULL DEFAULT false,
-	reason   text NOT NULL DEFAULT ''
+	reason   text NOT NULL DEFAULT '',
+	server_id text NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS clavis_audit_ts_idx ON clavis_audit (ts DESC);
 CREATE INDEX IF NOT EXISTS clavis_agents_owner_idx ON clavis_agents (owner_key_id);
+
+-- Migrations for databases created before the server_id column existed:
+-- each server instance stamps every row it writes.
+ALTER TABLE clavis_agents ADD COLUMN IF NOT EXISTS server_id text NOT NULL DEFAULT '';
+ALTER TABLE clavis_documents ADD COLUMN IF NOT EXISTS server_id text NOT NULL DEFAULT '';
+ALTER TABLE clavis_e2e_sessions ADD COLUMN IF NOT EXISTS server_id text NOT NULL DEFAULT '';
+ALTER TABLE clavis_peer_state ADD COLUMN IF NOT EXISTS server_id text NOT NULL DEFAULT '';
+ALTER TABLE clavis_audit ADD COLUMN IF NOT EXISTS server_id text NOT NULL DEFAULT '';
 `

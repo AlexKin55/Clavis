@@ -101,10 +101,18 @@ Schema (in [`postgres/schema.sql`](postgres/schema.sql)):
 | `clavis_peer_state` | observed health of peer instances |
 | `clavis_audit` | who/when/where access events |
 
+Every table carries a `server_id` column: the identity of the Key Server
+instance (generated once at install time, `server-xxxx`, persisted in
+`server.yaml → id_file`) that produced the row, so records can be
+attributed across the cluster.
+
 ```yaml
 # server.yaml (on every instance)
 db_url: "postgres://clavis:...@db-host:5432/clavis"
 peers: "https://ks2.example.com:8443,https://ks3.example.com:8443"
+# server identity created on first start (0600); stamped into every row
+# this instance writes in the shared PostgreSQL tables
+id_file: "/var/lib/clavis/server-id"
 ```
 
 ## Offline access (local SQLite cache)

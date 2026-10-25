@@ -19,6 +19,9 @@ type Document struct {
 	TTL       time.Duration
 	Revoked   bool
 	CreatedAt time.Time
+	// ServerID is the Key Server instance that created (or last saw) the
+	// document. Empty in single-server/in-memory setups.
+	ServerID string
 }
 
 // AgentRecord is the v2 registration record of an agent.
@@ -39,6 +42,8 @@ type AgentRecord struct {
 	Revoked bool
 	// CreatedAt is the registration time.
 	CreatedAt time.Time
+	// ServerID is the Key Server instance that registered the agent.
+	ServerID string
 }
 
 // AuditEntry records one decision (v1 issuance or v2 reader-key events).
@@ -48,6 +53,8 @@ type AuditEntry struct {
 	Document string
 	Allowed  bool
 	Reason   string
+	// ServerID is the Key Server instance that produced the entry.
+	ServerID string
 }
 
 // E2ESession describes a meeting point created by the reader agent.
@@ -56,6 +63,8 @@ type E2ESession struct {
 	OwnerKeyID  string
 	PeerAgentID string
 	CreatedAt   time.Time
+	// ServerID is the Key Server instance that created the rendezvous.
+	ServerID string
 }
 
 // PeerState is the observed health state of a peer Key Server instance.
@@ -63,6 +72,8 @@ type PeerState struct {
 	Peer     string
 	LastSeen time.Time
 	LastOK   time.Time
+	// ServerID is the instance that last observed the peer.
+	ServerID string
 }
 
 // Store is the Key Server persistence surface. Implementations: MemoryStore
@@ -101,6 +112,7 @@ type Store interface {
 // MemoryStore is the default in-memory implementation.
 type MemoryStore struct {
 	mu        sync.RWMutex
+	serverID  string
 	documents map[string]*Document
 	agents    map[string]*AgentRecord // key: AgentID
 	byOwner   map[string]string       // ownerKeyID -> AgentID
@@ -109,15 +121,22 @@ type MemoryStore struct {
 	peers     map[string]*PeerState  // peer addr -> state
 }
 
-// NewMemoryStore creates an empty in-memory store.
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
+// NewMemoryStore creates an empty in-memory store. The optional serverID
+// (the running Key Server instance id) is stamped into every record, which
+// lets tests verify the server-attribution behaviour of the PostgreSQL
+// store.
+func NewMemoryStore(serverID ...string) *MemoryStore {
+	s := &MemoryStore{
 		documents: make(map[string]*Document),
 		agents:    make(map[string]*AgentRecord),
 		byOwner:   make(map[string]string),
 		e2e:       make(map[string]*E2ESession),
 		peers:     make(map[string]*PeerState),
 	}
+	if len(serverID) > 0 {
+		s.serverID = serverID[0]
+	}
+	return s
 }
 
 // NewStore is an alias kept for compatibility.
@@ -141,6 +160,7 @@ func (s *MemoryStore) EnsureDocument(uuid string, defaultPolicies keyclient.Poli
 		Policies:  defaultPolicies,
 		TTL:       defaultTTL,
 		CreatedAt: time.Now(),
+		ServerID:  s.serverID,
 	}
 	s.documents[uuid] = doc
 	return doc, nil
@@ -231,6 +251,9 @@ func (s *MemoryStore) RegisterAgent(rec AgentRecord) error {
 		// Keep revoked state.
 		rec.Revoked = existing.Revoked
 	}
+	if rec.ServerID == "" {
+		rec.ServerID = s.serverID
+	}
 	rec.CreatedAt = time.Now()
 	s.agents[rec.AgentID] = &rec
 	s.byOwner[rec.OwnerKeyID] = rec.AgentID
@@ -275,6 +298,9 @@ func (s *MemoryStore) SetReaderKey(ownerKeyID string, readerKey []byte) error {
 func (s *MemoryStore) AddAudit(e AuditEntry) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if e.ServerID == "" {
+		e.ServerID = s.serverID
+	}
 	s.audit = append(s.audit, e)
 }
 
@@ -292,6 +318,7 @@ func (s *MemoryStore) CreateE2ESession(ownerKeyID, peerAgentID string) (E2ESessi
 		OwnerKeyID:  ownerKeyID,
 		PeerAgentID: peerAgentID,
 		CreatedAt:   time.Now(),
+		ServerID:    s.serverID,
 	}
 	s.e2e[session.SessionID] = &session
 	return session, nil
@@ -337,6 +364,7 @@ func (s *MemoryStore) RecordPeerStatus(peer string, alive bool) {
 	if alive {
 		st.LastOK = now
 	}
+	st.ServerID = s.serverID
 }
 
 // PeerStates returns the observed health states of all peers.

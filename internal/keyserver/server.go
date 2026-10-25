@@ -211,6 +211,7 @@ type auditView struct {
 	Document string `json:"document"`
 	Allowed  bool   `json:"allowed"`
 	Reason   string `json:"reason"`
+	ServerID string `json:"server_id,omitempty"`
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
@@ -229,6 +230,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 			Document: e.Document,
 			Allowed:  e.Allowed,
 			Reason:   e.Reason,
+			ServerID: e.ServerID,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"audit": view})

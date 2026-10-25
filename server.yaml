@@ -26,6 +26,12 @@ peer_check_interval_seconds: 30
 # participates in the reader-key (AS) derivation during registration.
 signing_key_file: "/var/lib/clavis/server-key.seed"
 
+# Server identity file (created on first run, 0600). The random
+# "server-xxxx" id is stamped into every row this instance writes in the
+# shared PostgreSQL tables (audit, agents, documents, e2e, peer state).
+# Leave empty to use an ephemeral id for the process lifetime only.
+id_file: "/var/lib/clavis/server-id"
+
 tls:
   # Server certificate and private key. Leave empty to serve plain HTTP
   # (localhost/testing only).

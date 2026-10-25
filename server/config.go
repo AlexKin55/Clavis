@@ -32,6 +32,12 @@ type Config struct {
 	// Ed25519 key S (created on first run). Its public part and the
 	// registration nonce are handed to agents (reader-key derivation).
 	SigningKeyFile string `yaml:"signing_key_file"`
+	// IDFile is the path to the server identity file (created on first
+	// run, mode 0600). The generated "server-xxxx" id is written to every
+	// row this instance produces in the shared PostgreSQL tables (audit,
+	// agents, documents, e2e sessions, peer state). Empty generates an
+	// ephemeral id that only lives for the process lifetime.
+	IDFile string `yaml:"id_file"`
 }
 
 // TLSConfig holds TLS/mTLS settings.

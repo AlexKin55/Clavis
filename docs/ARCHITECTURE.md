@@ -61,6 +61,16 @@ document UUID is preserved.
 - `POST /api/v1/e2e/sessions` — rendezvous for direct exchange
 - `GET  /api/v1/audit`, `GET /api/v1/documents`, `GET /healthz`
 
+### Server identity and attribution
+
+Like the agent, each Key Server instance gets a random id (`server-xxxx`)
+generated once at install time and persisted in `id_file` (0600). The id
+is stamped into every row the instance writes in the shared PostgreSQL
+tables (`server_id` column on `clavis_agents`, `clavis_documents`,
+`clavis_e2e_sessions`, `clavis_peer_state` and `clavis_audit`), so the
+whole cluster can attribute each record — registrations, key issuances,
+e2e rendezvous and audit decisions — to the server that produced it.
+
 ## Desktop UI and notifications
 
 The agent exposes a localhost HTTP API (`agent.ui_listen`, default
