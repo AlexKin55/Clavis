@@ -33,7 +33,7 @@ func TestCreateWriteReadRoundTrip(t *testing.T) {
 	root, sourceDir := newTestRoot(t)
 	path := filepath.Join(sourceDir, "doc.txt")
 
-	f, err := root.createProtectedFile(path, 0o644)
+	f, err := root.createProtectedFile(context.Background(), path, 0o644)
 	if err != nil {
 		t.Fatalf("createProtectedFile() error: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestReadAfterReopen(t *testing.T) {
 	root, sourceDir := newTestRoot(t)
 	path := filepath.Join(sourceDir, "persist.txt")
 
-	f, err := root.createProtectedFile(path, 0o644)
+	f, err := root.createProtectedFile(context.Background(), path, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestReadAfterReopen(t *testing.T) {
 		t.Fatal(e)
 	}
 
-	reopened, err := root.openProtectedFile(path, os.O_RDWR)
+	reopened, err := root.openProtectedFile(context.Background(), path, os.O_RDWR)
 	if err != nil {
 		t.Fatalf("openProtectedFile() error: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestOpenNonProtectedFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := root.openProtectedFile(path, os.O_RDWR); err == nil {
+	if _, err := root.openProtectedFile(context.Background(), path, os.O_RDWR); err == nil {
 		t.Fatal("openProtectedFile() error = nil, want an error")
 	}
 }
@@ -138,7 +138,7 @@ func TestTruncateKeepsHeader(t *testing.T) {
 	root, sourceDir := newTestRoot(t)
 	path := filepath.Join(sourceDir, "trunc.txt")
 
-	f, err := root.createProtectedFile(path, 0o644)
+	f, err := root.createProtectedFile(context.Background(), path, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestRandomAccessWriteRead(t *testing.T) {
 	root, sourceDir := newTestRoot(t)
 	path := filepath.Join(sourceDir, "random.txt")
 
-	f, err := root.createProtectedFile(path, 0o644)
+	f, err := root.createProtectedFile(context.Background(), path, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestVisibleSize(t *testing.T) {
 	root, sourceDir := newTestRoot(t)
 	path := filepath.Join(sourceDir, "size.txt")
 
-	f, err := root.createProtectedFile(path, 0o644)
+	f, err := root.createProtectedFile(context.Background(), path, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestOpenAccessDenied(t *testing.T) {
 	root, sourceDir := newTestRoot(t)
 	path := filepath.Join(sourceDir, "guarded.txt")
 
-	f, err := root.createProtectedFile(path, 0o644)
+	f, err := root.createProtectedFile(context.Background(), path, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestOpenAccessGranted(t *testing.T) {
 	root, sourceDir := newTestRoot(t)
 	path := filepath.Join(sourceDir, "guarded.txt")
 
-	f, err := root.createProtectedFile(path, 0o644)
+	f, err := root.createProtectedFile(context.Background(), path, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestUUIDInHeader(t *testing.T) {
 	root, sourceDir := newTestRoot(t)
 	path := filepath.Join(sourceDir, "uuid.txt")
 
-	f, err := root.createProtectedFile(path, 0o644)
+	f, err := root.createProtectedFile(context.Background(), path, 0o644)
 	if err != nil {
 		t.Fatal(err)
 	}

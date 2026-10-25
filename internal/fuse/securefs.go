@@ -93,12 +93,14 @@ func (n *secureNode) Getattr(_ context.Context, _ fs.FileHandle, out *fuse.AttrO
 
 // Open opens an existing protected file and returns a direct-IO handle.
 // The calling process is identified, described and checked against the
-// interceptor policy before the file is opened.
+// interceptor policy before the file is opened. The subject is attached
+// to the context for the key getter.
 func (n *secureNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	if n.root.cfg.Interceptor != nil {
-		s := subjectInfoFromContext(ctx)
-		s.FileName = n.sourcePath
+	s := subjectInfoFromContext(ctx)
+	s.FileName = n.sourcePath
+	ctx = subject.WithContext(ctx, s)
 
+	if n.root.cfg.Interceptor != nil {
 		mask := interceptor.ReadMask
 		if flags&syscall.O_ACCMODE != syscall.O_RDONLY {
 			mask |= interceptor.WriteMask
@@ -110,7 +112,7 @@ func (n *secureNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uin
 		n.root.cfg.Interceptor.LogAccess(s, true)
 	}
 
-	file, err := n.root.openProtectedFile(n.sourcePath, normalizeFlags(flags))
+	file, err := n.root.openProtectedFile(ctx, n.sourcePath, normalizeFlags(flags))
 	if err != nil {
 		n.root.cfg.Logger.Debug("open failed", "path", n.sourcePath, "error", err)
 		return nil, 0, errno(err)
@@ -144,9 +146,11 @@ func subjectInfoFromContext(ctx context.Context) subject.Info {
 func (n *secureNode) Create(ctx context.Context, name string, _ uint32, mode uint32, out *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
 	path := filepath.Join(n.sourcePath, name)
 
+	s := subjectInfoFromContext(ctx)
+	s.FileName = path
+	ctx = subject.WithContext(ctx, s)
+
 	if n.root.cfg.Interceptor != nil {
-		s := subjectInfoFromContext(ctx)
-		s.FileName = path
 		if !n.root.cfg.Interceptor.Permit(interceptor.WriteMask, s) {
 			n.root.cfg.Interceptor.LogAccess(s, false)
 			return nil, nil, 0, syscall.EACCES
@@ -154,7 +158,7 @@ func (n *secureNode) Create(ctx context.Context, name string, _ uint32, mode uin
 		n.root.cfg.Interceptor.LogAccess(s, true)
 	}
 
-	file, err := n.root.createProtectedFile(path, mode&0o7777)
+	file, err := n.root.createProtectedFile(ctx, path, mode&0o7777)
 	if err != nil {
 		n.root.cfg.Logger.Debug("create failed", "path", path, "error", err)
 		return nil, nil, 0, errno(err)
@@ -239,7 +243,7 @@ func (n *secureNode) Rename(_ context.Context, name string, newParent fs.InodeEm
 }
 
 // Setattr applies size/mode/owner/timestamps changes to the source file.
-func (n *secureNode) Setattr(_ context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+func (n *secureNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
 	if in.Valid&fuse.FATTR_SIZE != 0 {
 		target := int64(in.Size)
 		var e syscall.Errno
@@ -247,7 +251,8 @@ func (n *secureNode) Setattr(_ context.Context, f fs.FileHandle, in *fuse.SetAtt
 			e = sf.truncateToVisible(target)
 		} else {
 			// No handle: reopen briefly so growth materializes zeros.
-			h, err := n.root.openProtectedFile(n.sourcePath, os.O_RDWR)
+			ctx = subject.WithContext(ctx, subjectInfoFromContext(ctx))
+			h, err := n.root.openProtectedFile(ctx, n.sourcePath, os.O_RDWR)
 			if err != nil {
 				return errno(err)
 			}

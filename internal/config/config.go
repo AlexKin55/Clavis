@@ -19,6 +19,7 @@ type Config struct {
 	Fuse   FuseConfig   `yaml:"fuse"`
 	Log    LogConfig    `yaml:"log"`
 	Policy PolicyConfig `yaml:"policy"`
+	Server ServerConfig `yaml:"server"`
 }
 
 // AgentConfig holds agent identity and service parameters.
@@ -59,6 +60,21 @@ type PolicyConfig struct {
 	// Whitelist lists executable names (/proc/<pid>/comm) allowed to open
 	// protected documents directly.
 	Whitelist []string `yaml:"whitelist"`
+}
+
+// ServerConfig holds the Key Server connection settings. An empty URL
+// disables the server and falls back to the local key file.
+type ServerConfig struct {
+	// URL is the base URL of the Key Server (e.g. https://keys.example.com).
+	URL string `yaml:"url"`
+	// CAFile is the CA bundle that signed the server certificate.
+	CAFile string `yaml:"ca_file"`
+	// CertFile is the client certificate of this agent (mTLS).
+	CertFile string `yaml:"cert_file"`
+	// KeyFile is the private key of the agent certificate.
+	KeyFile string `yaml:"key_file"`
+	// TimeoutSeconds bounds each Key Server request.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // LogConfig holds logging parameters.
@@ -102,6 +118,9 @@ func Default() *Config {
 		Policy: PolicyConfig{
 			AllowUID0:     false,
 			AllowFirejail: true,
+		},
+		Server: ServerConfig{
+			TimeoutSeconds: 10,
 		},
 	}
 }

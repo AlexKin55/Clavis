@@ -18,6 +18,7 @@ import (
 	"github.com/clavis/clavis/internal/crypto"
 	"github.com/clavis/clavis/internal/fuse"
 	"github.com/clavis/clavis/internal/interceptor"
+	"github.com/clavis/clavis/internal/keyclient"
 	"github.com/clavis/clavis/internal/logging"
 	"github.com/clavis/clavis/internal/version"
 )
@@ -53,7 +54,22 @@ func Run(ctx context.Context, cfgPath string) error {
 		return errors.New("crypto.key_file is required for the fuse mount")
 	}
 
-	keyGetter := crypto.NewFileKeyGetter(cfg.Crypto.KeyFile)
+	var keyGetter crypto.KeyGetter = crypto.NewFileKeyGetter(cfg.Crypto.KeyFile)
+	if cfg.Server.URL != "" {
+		tlsCfg, err := keyclient.NewTLSConfig(keyclient.TLSConfig{
+			CAFile:   cfg.Server.CAFile,
+			CertFile: cfg.Server.CertFile,
+			KeyFile:  cfg.Server.KeyFile,
+		})
+		if err != nil {
+			return fmt.Errorf("key server tls: %w", err)
+		}
+		client := keyclient.NewClient(cfg.Server.URL, tlsCfg,
+			time.Duration(cfg.Server.TimeoutSeconds)*time.Second)
+		keyGetter = keyclient.NewGetter(client, keyclient.NewCache())
+		logger.Info("using key server", "url", cfg.Server.URL)
+	}
+
 	policy := interceptor.NewPolicy(interceptor.Config{
 		AllowUID0:     cfg.Policy.AllowUID0,
 		AllowFirejail: cfg.Policy.AllowFirejail,

@@ -5,6 +5,7 @@ package subject
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -108,4 +109,19 @@ func firstID(line []byte) uint32 {
 		return 0
 	}
 	return uint32(id)
+}
+
+// subjectKey references the subject stored in a context.
+type subjectKey struct{}
+
+// WithContext attaches the subject to the context so downstream key
+// getters can include it in Key Server authorization requests.
+func WithContext(ctx context.Context, s Info) context.Context {
+	return context.WithValue(ctx, subjectKey{}, s)
+}
+
+// FromContext returns the subject attached to the context.
+func FromContext(ctx context.Context) (Info, bool) {
+	s, ok := ctx.Value(subjectKey{}).(Info)
+	return s, ok
 }

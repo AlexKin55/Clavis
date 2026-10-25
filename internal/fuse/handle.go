@@ -152,7 +152,8 @@ func (h *secureFile) fillGap(endVisible int64) error {
 
 // createProtectedFile creates a new protected file: it generates a
 // document UUID, writes the header and returns an opened secureFile.
-func (r *SecureRoot) createProtectedFile(path string, mode uint32) (*secureFile, error) {
+// The context carries the subject for the key getter.
+func (r *SecureRoot) createProtectedFile(ctx context.Context, path string, mode uint32) (*secureFile, error) {
 	osf, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, os.FileMode(mode))
 	if err != nil {
 		return nil, err
@@ -173,7 +174,7 @@ func (r *SecureRoot) createProtectedFile(path string, mode uint32) (*secureFile,
 		return nil, fmt.Errorf("write header: %w", err)
 	}
 
-	file, err := newFileHandle(r, osf, header)
+	file, err := newFileHandle(ctx, r, osf, header)
 	if err != nil {
 		_ = osf.Close()
 		return nil, err
@@ -182,8 +183,8 @@ func (r *SecureRoot) createProtectedFile(path string, mode uint32) (*secureFile,
 }
 
 // openProtectedFile opens an existing protected file and resolves its
-// header, nonce and cryptor.
-func (r *SecureRoot) openProtectedFile(path string, flags int) (*secureFile, error) {
+// header, nonce and cryptor. The context carries the subject.
+func (r *SecureRoot) openProtectedFile(ctx context.Context, path string, flags int) (*secureFile, error) {
 	osf, err := os.OpenFile(path, flags, 0)
 	if err != nil {
 		return nil, err
@@ -212,12 +213,12 @@ func (r *SecureRoot) openProtectedFile(path string, flags int) (*secureFile, err
 		}
 	}
 
-	return newFileHandle(r, osf, header)
+	return newFileHandle(ctx, r, osf, header)
 }
 
 // newFileHandle resolves the key and builds the cryptor for the header.
-func newFileHandle(r *SecureRoot, osf *os.File, header *crypto.DocumentHeader) (*secureFile, error) {
-	key, err := r.cfg.KeyGetter.LoadKey(context.Background(), header.UUID)
+func newFileHandle(ctx context.Context, r *SecureRoot, osf *os.File, header *crypto.DocumentHeader) (*secureFile, error) {
+	key, err := r.cfg.KeyGetter.LoadKey(ctx, header.UUID)
 	if err != nil {
 		return nil, fmt.Errorf("load key: %w", err)
 	}

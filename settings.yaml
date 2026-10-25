@@ -22,6 +22,17 @@ policy:
   # Executable names (/proc/<pid>/comm) allowed to open protected documents.
   whitelist: []
 
+server:
+  # Key Server URL; empty disables the server and uses the local key file.
+  url: ""
+  # CA bundle that signed the server certificate (mTLS).
+  ca_file: "/etc/clavis/server-ca.pem"
+  # Agent client certificate and private key (mTLS).
+  cert_file: "/etc/clavis/agent.pem"
+  key_file: "/etc/clavis/agent-key.pem"
+  # Request timeout in seconds.
+  timeout_seconds: 10
+
 fuse:
   # Directory where the encrypted files physically reside (must exist).
   directory: "/opt/clavis/data"
