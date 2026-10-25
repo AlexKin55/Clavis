@@ -2,8 +2,9 @@
 --
 -- Applied automatically by the Key Server on start (db_url set) and
 -- mounted as an init script in postgres/compose.yml. All Key Server
--- instances share this database, keeping agents, reader keys and the
--- audit trail consistent across the cluster.
+-- instances share this database, keeping agents, reader keys, e2e
+-- rendezvous, document policies, peer health and the audit trail
+-- consistent across the cluster.
 
 CREATE TABLE IF NOT EXISTS clavis_agents (
 	agent_id     text PRIMARY KEY,
@@ -14,6 +15,29 @@ CREATE TABLE IF NOT EXISTS clavis_agents (
 	reader_key   bytea,
 	revoked      boolean NOT NULL DEFAULT false,
 	created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS clavis_documents (
+	uuid         text PRIMARY KEY,
+	owner_key_id text NOT NULL DEFAULT '',
+	key          bytea NOT NULL DEFAULT ''::bytea,
+	policies     jsonb NOT NULL DEFAULT '{}'::jsonb,
+	ttl_seconds  bigint NOT NULL DEFAULT 3600,
+	revoked      boolean NOT NULL DEFAULT false,
+	created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS clavis_e2e_sessions (
+	session_id    text PRIMARY KEY,
+	owner_key_id  text NOT NULL,
+	peer_agent_id text NOT NULL DEFAULT '',
+	created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS clavis_peer_state (
+	peer      text PRIMARY KEY,
+	last_seen timestamptz NOT NULL,
+	last_ok   timestamptz
 );
 
 CREATE TABLE IF NOT EXISTS clavis_audit (

@@ -58,6 +58,13 @@ type E2ESession struct {
 	CreatedAt   time.Time
 }
 
+// PeerState is the observed health state of a peer Key Server instance.
+type PeerState struct {
+	Peer     string
+	LastSeen time.Time
+	LastOK   time.Time
+}
+
 // Store is the Key Server persistence surface. Implementations: MemoryStore
 // (tests/dev) and PostgresStore (production).
 type Store interface {
@@ -84,6 +91,10 @@ type Store interface {
 	// --- e2e sessions ---
 	CreateE2ESession(ownerKeyID, peerAgentID string) (E2ESession, error)
 	GetE2ESession(sessionID string) (E2ESession, bool)
+
+	// --- peer health (cluster coordination) ---
+	RecordPeerStatus(peer string, alive bool)
+	PeerStates() []PeerState
 }
 
 // MemoryStore is the default in-memory implementation.
@@ -94,6 +105,7 @@ type MemoryStore struct {
 	byOwner   map[string]string       // ownerKeyID -> AgentID
 	audit     []AuditEntry
 	e2e       map[string]*E2ESession // sessionID -> session
+	peers     map[string]*PeerState  // peer addr -> state
 }
 
 // NewMemoryStore creates an empty in-memory store.
@@ -103,6 +115,7 @@ func NewMemoryStore() *MemoryStore {
 		agents:    make(map[string]*AgentRecord),
 		byOwner:   make(map[string]string),
 		e2e:       make(map[string]*E2ESession),
+		peers:     make(map[string]*PeerState),
 	}
 }
 
@@ -292,6 +305,35 @@ func (s *MemoryStore) GetE2ESession(sessionID string) (E2ESession, bool) {
 		return E2ESession{}, false
 	}
 	return *session, true
+}
+
+// RecordPeerStatus stores the latest observed health of a peer.
+func (s *MemoryStore) RecordPeerStatus(peer string, alive bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	st, ok := s.peers[peer]
+	if !ok {
+		st = &PeerState{Peer: peer}
+		s.peers[peer] = st
+	}
+	st.LastSeen = now
+	if alive {
+		st.LastOK = now
+	}
+}
+
+// PeerStates returns the observed health states of all peers.
+func (s *MemoryStore) PeerStates() []PeerState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]PeerState, 0, len(s.peers))
+	for _, st := range s.peers {
+		out = append(out, *st)
+	}
+	return out
 }
 
 // ListAudit returns up to limit latest audit entries (most recent first).

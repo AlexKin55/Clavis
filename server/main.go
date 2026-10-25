@@ -130,7 +130,7 @@ func run() int {
 		if interval <= 0 {
 			interval = 30 * time.Second
 		}
-		go monitorPeers(ctx, peers, interval)
+		go monitorPeers(ctx, peers, interval, store)
 	}
 
 	fmt.Printf("clavis key server listening on %s\n", cfg.Listen)
@@ -158,7 +158,7 @@ func run() int {
 // monitorPeers periodically checks the health of the configured peer
 // Key Servers. It is a coordination utility; the shared PostgreSQL
 // database already keeps all instances consistent.
-func monitorPeers(ctx context.Context, peers []string, interval time.Duration) {
+func monitorPeers(ctx context.Context, peers []string, interval time.Duration, store keyserver.Store) {
 	client := &http.Client{Timeout: 2 * time.Second}
 	check := func() {
 		for _, peer := range peers {
@@ -172,6 +172,8 @@ func monitorPeers(ctx context.Context, peers []string, interval time.Duration) {
 			if alive {
 				status = "ok"
 			}
+			// The shared database records the observed state.
+			store.RecordPeerStatus(peer, alive)
 			fmt.Printf("peer %s: %s\n", peer, status)
 		}
 	}

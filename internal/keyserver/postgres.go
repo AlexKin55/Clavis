@@ -2,17 +2,24 @@ package keyserver
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/clavis/clavis/internal/keyclient"
 )
 
-// PostgresStore persists agents and the audit trail in PostgreSQL.
-// v1 document records keep the in-memory behavior (the v2 model removes
-// document keys from the server entirely).
+func randRead(b []byte) (int, error) { return rand.Read(b) }
+
+// PostgresStore persists all Key Server state in the shared PostgreSQL
+// database: agents, reader keys, audit trail, e2e sessions, document
+// policies and peer health. Because every server instance writes to the
+// same database, the cluster is automatically consistent.
 type PostgresStore struct {
-	*MemoryStore
 	pool *pgxpool.Pool
 }
 
@@ -31,32 +38,20 @@ func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 		pool.Close()
 		return nil, fmt.Errorf("keyserver: init schema: %w", err)
 	}
-	return &PostgresStore{MemoryStore: NewMemoryStore(), pool: pool}, nil
+	return &PostgresStore{pool: pool}, nil
 }
 
 // Close releases the connection pool.
-func (p *PostgresStore) Close() {
-	p.pool.Close()
-}
+func (p *PostgresStore) Close() { p.pool.Close() }
 
-// CreateE2ESession keeps rendezvous records in memory (session-level data).
-func (p *PostgresStore) CreateE2ESession(ownerKeyID, peerAgentID string) (E2ESession, error) {
-	return p.MemoryStore.CreateE2ESession(ownerKeyID, peerAgentID)
-}
-
-// GetE2ESession returns the rendezvous from memory.
-func (p *PostgresStore) GetE2ESession(sessionID string) (E2ESession, bool) {
-	return p.MemoryStore.GetE2ESession(sessionID)
-}
+// ---------------------------------------------------------------- agents
 
 // EnsureAgent registers the agent id if unknown.
 func (p *PostgresStore) EnsureAgent(id string) {
-	if _, err := p.pool.Exec(context.Background(),
+	_, _ = p.pool.Exec(context.Background(),
 		`INSERT INTO clavis_agents (agent_id, pub_sig, owner_key_id, nonce_server)
 		 VALUES ($1, ''::bytea, $1, ''::bytea)
-		 ON CONFLICT (agent_id) DO NOTHING`, id); err != nil {
-		return // best effort; the v2 registration path is authoritative
-	}
+		 ON CONFLICT (agent_id) DO NOTHING`, id)
 }
 
 // AgentRevoked reports whether the agent was revoked.
@@ -136,6 +131,198 @@ func (p *PostgresStore) SetReaderKey(ownerKeyID string, readerKey []byte) error 
 	return nil
 }
 
+// ------------------------------------------------------------- documents
+
+// EnsureDocument returns the document, creating it on first access.
+func (p *PostgresStore) EnsureDocument(uuid string, defaultPolicies keyclient.Policies, defaultTTL time.Duration) (*Document, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if doc, ok := p.Document(uuid); ok {
+		return doc, nil
+	}
+	key := make([]byte, 32)
+	if _, err := randRead(key); err != nil {
+		return nil, fmt.Errorf("keyserver: generate document key: %w", err)
+	}
+	policies, _ := json.Marshal(defaultPolicies)
+	ttlSec := int64(defaultTTL / time.Second)
+	if ttlSec <= 0 {
+		ttlSec = 3600
+	}
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO clavis_documents (uuid, key, policies, ttl_seconds)
+		 VALUES ($1, $2, $3::jsonb, $4)
+		 ON CONFLICT (uuid) DO UPDATE SET owner_key_id = EXCLUDED.owner_key_id`,
+		uuid, key, policies, ttlSec)
+	if err != nil {
+		return nil, fmt.Errorf("keyserver: ensure document: %w", err)
+	}
+	doc, _ := p.Document(uuid)
+	return doc, nil
+}
+
+// Document returns the document by UUID.
+func (p *PostgresStore) Document(uuid string) (*Document, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var d Document
+	var policies []byte
+	var ttlSec int64
+	err := p.pool.QueryRow(ctx,
+		`SELECT uuid, key, policies, ttl_seconds, revoked FROM clavis_documents WHERE uuid = $1`, uuid).
+		Scan(&d.UUID, &d.Key, &policies, &ttlSec, &d.Revoked)
+	if err != nil {
+		return nil, false
+	}
+	if err := json.Unmarshal(policies, &d.Policies); err != nil {
+		return nil, false
+	}
+	d.TTL = time.Duration(ttlSec) * time.Second
+	return &d, true
+}
+
+// SetPolicy updates the policies and TTL of a document.
+func (p *PostgresStore) SetPolicy(uuid string, policies keyclient.Policies, ttl time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	data, err := json.Marshal(policies)
+	if err != nil {
+		return err
+	}
+	ttlSec := int64(ttl / time.Second)
+	tag, err := p.pool.Exec(ctx,
+		`UPDATE clavis_documents SET policies = $2::jsonb, ttl_seconds = $3 WHERE uuid = $1`,
+		uuid, data, ttlSec)
+	if err != nil {
+		return fmt.Errorf("keyserver: set policy: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("keyserver: document %q not found", uuid)
+	}
+	return nil
+}
+
+// RevokeDocument revokes a document for all agents.
+func (p *PostgresStore) RevokeDocument(uuid string) {
+	_, _ = p.pool.Exec(context.Background(),
+		`INSERT INTO clavis_documents (uuid, key, policies, ttl_seconds, revoked)
+		 VALUES ($1, ''::bytea, '{}'::jsonb, 3600, true)
+		 ON CONFLICT (uuid) DO UPDATE SET revoked = true`, uuid)
+}
+
+// Documents lists all registered documents.
+func (p *PostgresStore) Documents() []*Document {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx,
+		`SELECT uuid, key, policies, ttl_seconds, revoked FROM clavis_documents`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var out []*Document
+	for rows.Next() {
+		var d Document
+		var policies []byte
+		var ttlSec int64
+		if err := rows.Scan(&d.UUID, &d.Key, &policies, &ttlSec, &d.Revoked); err != nil {
+			continue
+		}
+		if err := json.Unmarshal(policies, &d.Policies); err != nil {
+			continue
+		}
+		d.TTL = time.Duration(ttlSec) * time.Second
+		out = append(out, &d)
+	}
+	return out
+}
+
+// ------------------------------------------------------------ e2e sessions
+
+// CreateE2ESession records a rendezvous for the e2e relay.
+func (p *PostgresStore) CreateE2ESession(ownerKeyID, peerAgentID string) (E2ESession, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	session := E2ESession{
+		SessionID:   "e2e-" + strconv.FormatInt(time.Now().UnixNano(), 36),
+		OwnerKeyID:  ownerKeyID,
+		PeerAgentID: peerAgentID,
+		CreatedAt:   time.Now(),
+	}
+	_, err := p.pool.Exec(ctx,
+		`INSERT INTO clavis_e2e_sessions (session_id, owner_key_id, peer_agent_id)
+		 VALUES ($1, $2, $3) ON CONFLICT (session_id) DO NOTHING`,
+		session.SessionID, ownerKeyID, peerAgentID)
+	if err != nil {
+		return E2ESession{}, fmt.Errorf("keyserver: create e2e session: %w", err)
+	}
+	return session, nil
+}
+
+// GetE2ESession returns the rendezvous by id.
+func (p *PostgresStore) GetE2ESession(sessionID string) (E2ESession, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var s E2ESession
+	err := p.pool.QueryRow(ctx,
+		`SELECT owner_key_id, peer_agent_id FROM clavis_e2e_sessions WHERE session_id = $1`, sessionID).
+		Scan(&s.OwnerKeyID, &s.PeerAgentID)
+	if err != nil {
+		return E2ESession{}, false
+	}
+	s.SessionID = sessionID
+	return s, true
+}
+
+// ---------------------------------------------------------------- peers
+
+// RecordPeerStatus stores the latest observed health of a peer.
+func (p *PostgresStore) RecordPeerStatus(peer string, alive bool) {
+	now := time.Now()
+	if alive {
+		_, _ = p.pool.Exec(context.Background(),
+			`INSERT INTO clavis_peer_state (peer, last_seen, last_ok) VALUES ($1, $2, $2)
+			 ON CONFLICT (peer) DO UPDATE SET last_seen = EXCLUDED.last_seen, last_ok = EXCLUDED.last_ok`,
+			peer, now)
+		return
+	}
+	_, _ = p.pool.Exec(context.Background(),
+		`INSERT INTO clavis_peer_state (peer, last_seen) VALUES ($1, $2)
+		 ON CONFLICT (peer) DO UPDATE SET last_seen = EXCLUDED.last_seen`,
+		peer, now)
+}
+
+// PeerStates returns the observed health states of all peers.
+func (p *PostgresStore) PeerStates() []PeerState {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rows, err := p.pool.Query(ctx, `SELECT peer, last_seen, COALESCE(last_ok, last_seen) FROM clavis_peer_state`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var out []PeerState
+	for rows.Next() {
+		var st PeerState
+		if err := rows.Scan(&st.Peer, &st.LastSeen, &st.LastOK); err != nil {
+			continue
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+// ---------------------------------------------------------------- audit
+
 // AddAudit appends an audit record to PostgreSQL.
 func (p *PostgresStore) AddAudit(e AuditEntry) {
 	_, _ = p.pool.Exec(context.Background(),
@@ -169,8 +356,8 @@ func (p *PostgresStore) ListAudit(limit int) []AuditEntry {
 	return out
 }
 
-// schemaDDL is the minimal PostgreSQL schema (also shipped as
-// deploy/schema.sql for manual setup).
+// schemaDDL is the PostgreSQL schema (also shipped as postgres/schema.sql
+// and deploy/schema.sql for manual setup).
 const schemaDDL = `
 CREATE TABLE IF NOT EXISTS clavis_agents (
 	agent_id     text PRIMARY KEY,
@@ -182,6 +369,26 @@ CREATE TABLE IF NOT EXISTS clavis_agents (
 	revoked      boolean NOT NULL DEFAULT false,
 	created_at   timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS clavis_documents (
+	uuid         text PRIMARY KEY,
+	owner_key_id text NOT NULL DEFAULT '',
+	key          bytea NOT NULL DEFAULT ''::bytea,
+	policies     jsonb NOT NULL DEFAULT '{}'::jsonb,
+	ttl_seconds  bigint NOT NULL DEFAULT 3600,
+	revoked      boolean NOT NULL DEFAULT false,
+	created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS clavis_e2e_sessions (
+	session_id   text PRIMARY KEY,
+	owner_key_id text NOT NULL,
+	peer_agent_id text NOT NULL DEFAULT '',
+	created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS clavis_peer_state (
+	peer      text PRIMARY KEY,
+	last_seen timestamptz NOT NULL,
+	last_ok   timestamptz
+);
 CREATE TABLE IF NOT EXISTS clavis_audit (
 	id       bigserial PRIMARY KEY,
 	ts       timestamptz NOT NULL DEFAULT now(),
@@ -191,4 +398,5 @@ CREATE TABLE IF NOT EXISTS clavis_audit (
 	reason   text NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS clavis_audit_ts_idx ON clavis_audit (ts DESC);
+CREATE INDEX IF NOT EXISTS clavis_agents_owner_idx ON clavis_agents (owner_key_id);
 `

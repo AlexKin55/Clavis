@@ -14,6 +14,29 @@ CREATE TABLE IF NOT EXISTS clavis_agents (
 	created_at   timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS clavis_documents (
+	uuid         text PRIMARY KEY,
+	owner_key_id text NOT NULL DEFAULT '',
+	key          bytea NOT NULL DEFAULT ''::bytea,
+	policies     jsonb NOT NULL DEFAULT '{}'::jsonb,
+	ttl_seconds  bigint NOT NULL DEFAULT 3600,
+	revoked      boolean NOT NULL DEFAULT false,
+	created_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS clavis_e2e_sessions (
+	session_id    text PRIMARY KEY,
+	owner_key_id  text NOT NULL,
+	peer_agent_id text NOT NULL DEFAULT '',
+	created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS clavis_peer_state (
+	peer      text PRIMARY KEY,
+	last_seen timestamptz NOT NULL,
+	last_ok   timestamptz
+);
+
 CREATE TABLE IF NOT EXISTS clavis_audit (
 	id       bigserial PRIMARY KEY,
 	ts       timestamptz NOT NULL DEFAULT now(),

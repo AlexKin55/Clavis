@@ -91,6 +91,16 @@ policies and the audit trail are identical on every server — the database
 itself is the source of truth. Each server also accepts a comma-separated
 `peers` list and health-checks the other instances.
 
+Schema (in [`postgres/schema.sql`](postgres/schema.sql)):
+
+| Table | Contents |
+|---|---|
+| `clavis_agents` | agents, reader keys (AS), owner ids, revocations |
+| `clavis_documents` | document policies, TTL, revocations |
+| `clavis_e2e_sessions` | rendezvous for direct key exchange |
+| `clavis_peer_state` | observed health of peer instances |
+| `clavis_audit` | who/when/where access events |
+
 ```yaml
 # server.yaml (on every instance)
 db_url: "postgres://clavis:...@db-host:5432/clavis"
