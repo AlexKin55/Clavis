@@ -52,6 +52,8 @@ type secureFile struct {
 	ownerPub       []byte // v2: owner public signature key
 	needsSignature bool   // v2: sign on Release
 	identity       *crypto.AgentIdentity
+	selfAS         []byte // v2: own reader key (for re-encryption)
+	changed        bool   // v2: content was written
 }
 
 // Read implements fs.FileReader: read ciphertext, decrypt on the fly.
@@ -109,6 +111,9 @@ func (h *secureFile) Write(_ context.Context, data []byte, off int64) (uint32, s
 	if err != nil {
 		return 0, errno(err)
 	}
+	if n > 0 {
+		h.changed = true
+	}
 	return uint32(n), 0
 }
 
@@ -126,20 +131,93 @@ func (h *secureFile) Fsync(_ context.Context, _ uint32) syscall.Errno {
 	return errno(h.f.Sync())
 }
 
-// Release implements fs.FileReleaser. For v2 newly created files the
-// owner signature is computed and stored before closing.
+// Release implements fs.FileReleaser. For v2 documents it finalizes the
+// owner signature and, when a foreign document was edited, re-encrypts
+// the whole document to the current agent (ownership change).
 func (h *secureFile) Release(_ context.Context) syscall.Errno {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.needsSignature && h.headerV2 != nil && h.identity != nil {
-		if err := h.signLocked(); err != nil {
-			h.needsSignature = false
-			return errno(err)
+	if h.headerV2 != nil && h.identity != nil {
+		foreign := h.headerV2.OwnerKeyID != h.identity.OwnerKeyID()
+		if foreign && h.changed {
+			if err := h.reencryptToSelfLocked(); err != nil {
+				return errno(err)
+			}
 		}
-		h.needsSignature = false
+		if h.needsSignature || (h.changed && !foreign) {
+			if err := h.signLocked(); err != nil {
+				h.needsSignature = false
+				return errno(err)
+			}
+			h.needsSignature = false
+		}
 	}
 	return errno(h.f.Close())
+}
+
+// reencryptToSelfLocked re-encrypts a foreign document under the
+// current agent: new document key DK', new header with the editor's
+// owner id, wrapped under the editor's reader key AS. The content is
+// read in full; the signature is finalized right after (signLocked).
+func (h *secureFile) reencryptToSelfLocked() error {
+	visible := h.visibleSize()
+	oldCipher := make([]byte, visible)
+	if _, err := h.f.ReadAt(oldCipher, h.headerSize+h.sigSize); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	plain, err := h.cryptor.Decrypt(oldCipher, 0)
+	if err != nil {
+		return err
+	}
+
+	dkNew := make([]byte, 32)
+	if _, err := rand.Read(dkNew); err != nil {
+		return err
+	}
+	var nonceNew [8]byte
+	if _, err := rand.Read(nonceNew[:]); err != nil {
+		return err
+	}
+	cryptorNew, err := crypto.NewAesCtr(dkNew, nonceNew)
+	if err != nil {
+		return err
+	}
+	cipherNew, err := cryptorNew.Encrypt(plain, 0)
+	if err != nil {
+		return err
+	}
+	if len(cipherNew) != len(oldCipher) {
+		return fmt.Errorf("fuse: re-encryption length mismatch")
+	}
+
+	wrapped, err := crypto.WrapKey(h.selfAS, dkNew)
+	if err != nil {
+		return err
+	}
+	var wrappedDK [crypto.WrappedKeySize]byte
+	copy(wrappedDK[:], wrapped)
+
+	headerNew, err := crypto.NewHeaderV2(h.identity.OwnerKeyID(), h.headerV2.UUID, h.headerV2.Mode, nonceNew, wrappedDK)
+	if err != nil {
+		return err
+	}
+	sigBlock := make([]byte, crypto.SignatureBlockLen)
+
+	physical := make([]byte, 0, int(h.headerSize)+int(h.sigSize)+len(cipherNew))
+	physical = append(physical, headerNew.Encode()...)
+	physical = append(physical, sigBlock...)
+	physical = append(physical, cipherNew...)
+	if _, err := h.f.WriteAt(physical, 0); err != nil {
+		return err
+	}
+
+	h.headerV2 = headerNew
+	h.cryptor = cryptorNew
+	h.sigBlock = sigBlock
+	h.ownerPub = nil
+	h.needsSignature = true
+	return nil
 }
 
 // truncateToVisible resizes the payload to size, keeping layout intact.
@@ -332,6 +410,7 @@ func (r *SecureRoot) createProtectedFileV2(_ context.Context, path string, mode 
 		cryptor:        cryptor,
 		needsSignature: true,
 		identity:       identity,
+		selfAS:         readerKey,
 	}, nil
 }
 
@@ -406,6 +485,12 @@ func (r *SecureRoot) openProtectedFileV2(ctx context.Context, osf *os.File, _ st
 		return nil, fmt.Errorf("read signature block: %w", err)
 	}
 
+	// The editor's own reader key, needed to re-encrypt on ownership change.
+	var selfAS []byte
+	if r.cfg.Identity != nil && len(r.cfg.ServerPub) > 0 && len(r.cfg.ServerNonce) > 0 {
+		selfAS, _ = r.cfg.Identity.ReaderKey(r.cfg.ServerPub, r.cfg.ServerNonce)
+	}
+
 	return &secureFile{
 		f:          osf,
 		headerV2:   header,
@@ -414,6 +499,8 @@ func (r *SecureRoot) openProtectedFileV2(ctx context.Context, osf *os.File, _ st
 		cryptor:    cryptor,
 		sigBlock:   sigBlock,
 		ownerPub:   ownerPub,
+		identity:   r.cfg.Identity,
+		selfAS:     selfAS,
 	}, nil
 }
 

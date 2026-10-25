@@ -177,6 +177,163 @@ func TestV2TamperFailsSignature(t *testing.T) {
 	_ = rf.Release(context.Background())
 }
 
+// TestV2OwnershipChange verifies that editing a foreign document
+// re-encrypts it to the editor: the header owner becomes B and the new
+// signature verifies under B's key.
+func TestV2OwnershipChange(t *testing.T) {
+	ownerA, serverPub, serverNonce := v2Fixture(t)
+	ownerB, _, _ := v2Fixture(t)
+
+	sourceDir := t.TempDir()
+	createRoot := NewSecureRoot(&Config{
+		SourceDir:   sourceDir,
+		KeyGetter:   crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),
+		Identity:    ownerA,
+		ServerPub:   serverPub,
+		ServerNonce: serverNonce,
+	})
+
+	path := filepath.Join(sourceDir, "doc.txt")
+	f, err := createRoot.createProtectedFile(context.Background(), path, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("original content from A")
+	if _, e := f.Write(context.Background(), original, 0); e != 0 {
+		t.Fatal(e)
+	}
+	if e := f.Release(context.Background()); e != 0 {
+		t.Fatal(e)
+	}
+
+	// B opens the document (read-only) and then edits it.
+	asA, _ := ownerA.ReaderKey(serverPub, serverNonce)
+	asB, _ := ownerB.ReaderKey(serverPub, serverNonce)
+	providerAB := staticReaderProvider{
+		ownerA.OwnerKeyID(): {as: asA, pub: ownerA.PublicSignatureKey()},
+		ownerB.OwnerKeyID(): {as: asB, pub: ownerB.PublicSignatureKey()},
+	}
+	readerRoot := NewSecureRoot(&Config{
+		SourceDir:   sourceDir,
+		KeyGetter:   crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),
+		Identity:    ownerB,
+		ServerPub:   serverPub,
+		ServerNonce: serverNonce,
+		ReaderKeys:  providerAB,
+	})
+
+	rf, err := readerRoot.openProtectedFile(context.Background(), path, os.O_RDWR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read everything first (verifies A's signature).
+	dest := make([]byte, len(original))
+	if _, e := rf.Read(context.Background(), dest, 0); e != 0 {
+		t.Fatalf("Read() errno: %v", e)
+	}
+	// Edit: append a line.
+	addition := []byte("\nedited by B")
+	if _, e := rf.Write(context.Background(), addition, int64(len(original))); e != 0 {
+		t.Fatal(e)
+	}
+	if e := rf.Release(context.Background()); e != 0 {
+		t.Fatalf("Release() errno: %v (re-encrypt to B)", e)
+	}
+
+	// The header owner must now be B.
+	physical, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, err := crypto.ParseHeaderV2(physical[:crypto.HeaderV2Size])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.OwnerKeyID != ownerB.OwnerKeyID() {
+		t.Error("document owner was not changed to B")
+	}
+
+	// An agent reading as B gets the full edited content with B's signature.
+	rfB, err := readerRoot.openProtectedFile(context.Background(), path, os.O_RDWR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]byte{}, original...), addition...)
+	out := make([]byte, len(want))
+	res, e := rfB.Read(context.Background(), out, 0)
+	if e != 0 {
+		t.Fatalf("Read() after ownership change errno: %v", e)
+	}
+	got, _ := res.Bytes(out)
+	if !bytes.Equal(got, want) {
+		t.Errorf("content mismatch after ownership change: %q", got)
+	}
+	_ = rfB.Release(context.Background())
+}
+
+// TestV2ReadOnlyDoesNotChangeOwner verifies that reading a foreign
+// document without edits keeps the original owner.
+func TestV2ReadOnlyDoesNotChangeOwner(t *testing.T) {
+	ownerA, serverPub, serverNonce := v2Fixture(t)
+	ownerB, _, _ := v2Fixture(t)
+
+	sourceDir := t.TempDir()
+	createRoot := NewSecureRoot(&Config{
+		SourceDir:   sourceDir,
+		KeyGetter:   crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),
+		Identity:    ownerA,
+		ServerPub:   serverPub,
+		ServerNonce: serverNonce,
+	})
+	path := filepath.Join(sourceDir, "doc.txt")
+	f, err := createRoot.createProtectedFile(context.Background(), path, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("read only")
+	if _, e := f.Write(context.Background(), payload, 0); e != 0 {
+		t.Fatal(e)
+	}
+	if e := f.Release(context.Background()); e != 0 {
+		t.Fatal(e)
+	}
+
+	asA, _ := ownerA.ReaderKey(serverPub, serverNonce)
+	readerRoot := NewSecureRoot(&Config{
+		SourceDir:   sourceDir,
+		KeyGetter:   crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),
+		Identity:    ownerB,
+		ServerPub:   serverPub,
+		ServerNonce: serverNonce,
+		ReaderKeys: staticReaderProvider{
+			ownerA.OwnerKeyID(): {as: asA, pub: ownerA.PublicSignatureKey()},
+		},
+	})
+	rf, err := readerRoot.openProtectedFile(context.Background(), path, os.O_RDWR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, len(payload))
+	if _, e := rf.Read(context.Background(), buf, 0); e != 0 {
+		t.Fatal(e)
+	}
+	if e := rf.Release(context.Background()); e != 0 {
+		t.Fatal(e)
+	}
+
+	physical, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, err := crypto.ParseHeaderV2(physical[:crypto.HeaderV2Size])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.OwnerKeyID != ownerA.OwnerKeyID() {
+		t.Error("read-only access must not change the owner")
+	}
+}
+
 // TestV2UnknownOwner verifies that a document whose owner is unknown to the
 // provider cannot be opened.
 func TestV2UnknownOwner(t *testing.T) {
