@@ -1,0 +1,31 @@
+# Sample Clavis agent settings (Go).
+#
+# Default paths mirror the C++ prototype (cybersafe/settings/settings.yaml)
+# but can be overridden for a particular workstation.
+
+agent:
+  id: "clavis-001"
+  # Address of the HTTP /healthz endpoint; empty disables the server.
+  health_listen: "127.0.0.1:8901"
+
+fuse:
+  # Directory where the encrypted files physically reside (must exist).
+  directory: "/opt/clavis/data"
+  # Mount point — the user sees decrypted files here.
+  mount_point: "/home/alex/Clavis"
+  # FUSE arguments (same as fuse.options in C++).
+  options:
+    - "-f"
+    - "-d"
+    - "-o"
+    - "auto_unmount,allow_other"
+
+log:
+  # Agent log file path. Empty means stderr only.
+  file: "/var/log/clavis/agent.log"
+  # Maximum file size before rotation (KB/MB/GB or bare bytes).
+  size: "5MB"
+  # Number of rotated log files to keep.
+  count: "3"
+  # Level: trace, debug, info, warn, error.
+  level: "debug"

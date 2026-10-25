@@ -1,0 +1,23 @@
+# Build artifacts (binaries must not be pushed)
+/bin/
+*.exe
+*.test
+
+# Local toolchain
+/.tools/
+
+# Logs
+*.log
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local settings overrides
+settings.local.yaml
+
+# Coverage
+coverage.out
+cover.html

@@ -1,0 +1,31 @@
+# golangci-lint configuration (v2).
+# Docs: https://golangci-lint.run/usage/configuration/
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - gocritic
+    - govet
+    - ineffassign
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  exclude-rules:
+    # Test helpers may intentionally ignore returned values.
+    - path: _test\.go
+      linters:
+        - errcheck
