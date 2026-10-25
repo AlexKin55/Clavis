@@ -28,7 +28,10 @@ clavis/
 │   ├── token/              # PKCS#11 hardware token (wrapped document keys)
 │   └── version/            # build version (ldflags)
 ├── scripts/                # helper scripts
-├── tests/                  # e2e tests (to be added)
+├── tests/                  # integration/e2e tests (mirrored layout)
+│   ├── fuse/               # real FUSE mount tests
+│   ├── e2e/                # relay + direct key exchange tests
+│   └── keyserver/          # Key Server HTTP API tests
 ├── settings.yaml           # agent sample configuration
 └── server.yaml             # Key Server sample configuration
 ```
@@ -67,6 +70,14 @@ go run ./agent open gedit /home/alex/Clavis/report.txt
 # Key Server (central key issuance, revocation, audit)
 go run ./server -config server.yaml
 ```
+
+## Tests layout
+
+Go requires unit tests to live next to the code they test (same package,
+white-box access), so they stay in the packages. Integration and
+end-to-end tests (real mounts, HTTP servers, relay exchanges) are kept
+separately in [`tests/`](tests/) with a mirrored directory structure and
+use only the public API.
 
 ## Benchmarks
 

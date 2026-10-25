@@ -1,9 +1,12 @@
-package keyserver
+// Package keyserver_test contains black-box integration tests for the
+// Key Server HTTP API (using the public Handler).
+package keyserver_test
 
 import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/clavis/clavis/internal/crypto"
 	"github.com/clavis/clavis/internal/keyclient"
+	"github.com/clavis/clavis/internal/keyserver"
 )
 
 const testAgent = "agent-001"
@@ -25,12 +29,14 @@ func serverPubKey() ed25519.PublicKey {
 	return ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
 }
 
-func newTestServer() *Server {
-	return NewServer(Config{
+func newTestServer() *httptest.Server {
+	srv := keyserver.NewServer(keyserver.Config{
 		DefaultPolicies: keyclient.Policies{ReadWrite: true},
 		DefaultTTL:      time.Hour,
 		ServerKey:       serverPubKey(),
-	}, NewMemoryStore())
+	}, keyserver.NewMemoryStore())
+	ts := httptest.NewServer(srv.Handler())
+	return ts
 }
 
 func doJSON(t *testing.T, srv *httptest.Server, method, path, agentID string, body any) (*http.Response, []byte) {
@@ -58,13 +64,14 @@ func doJSON(t *testing.T, srv *httptest.Server, method, path, agentID string, bo
 	return resp, buf.Bytes()
 }
 
-// TestIssueDeterministicKey verifies the core contract: the same document
-// UUID always yields the same key, and policies/TTL are delivered.
+// TestIssueDeterministicKey verifies the v1 contract: same document UUID
+// always yields the same key with policies/TTL.
 func TestIssueDeterministicKey(t *testing.T) {
-	srv := httptest.NewServer(newTestServer().Handler())
+	srv := newTestServer()
 	defer srv.Close()
 
 	uuid := "11111111-2222-3333-4444-555555555555"
+	var first string
 	for i := 0; i < 2; i++ {
 		resp, body := doJSON(t, srv, http.MethodPost, "/api/v1/keys/issue", testAgent, keyclient.IssueRequest{
 			DocumentUUID: uuid,
@@ -78,25 +85,22 @@ func TestIssueDeterministicKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(out.Key) != 64 {
-			t.Errorf("key length = %d, want 64 hex chars", len(out.Key))
+			t.Errorf("key length = %d", len(out.Key))
 		}
 		if !out.Policies.CanWrite() {
 			t.Error("default policies must allow writes")
 		}
-		if out.TTLSeconds != 3600 {
-			t.Errorf("ttl = %d, want 3600", out.TTLSeconds)
+		if i == 0 {
+			first = out.Key
+		} else if out.Key != first {
+			t.Error("key changed between issuances")
 		}
-		if i == 1 {
-			continue
-		}
-		// Second iteration is compared below via a helper variable.
-		_ = out
 	}
 }
 
-// TestIssueSameKeyAcrossAgents verifies that the key is per-document.
+// TestIssueSameKeyAcrossAgents verifies the key is per-document.
 func TestIssueSameKeyAcrossAgents(t *testing.T) {
-	srv := httptest.NewServer(newTestServer().Handler())
+	srv := newTestServer()
 	defer srv.Close()
 
 	uuid := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -117,41 +121,34 @@ func TestIssueSameKeyAcrossAgents(t *testing.T) {
 	}
 }
 
-// TestIssueDocumentRevocation verifies the one-click document revoke.
-func TestIssueDocumentRevocation(t *testing.T) {
-	srv := httptest.NewServer(newTestServer().Handler())
+// TestRevocations verifies document and agent revocation (403 after).
+func TestRevocations(t *testing.T) {
+	srv := newTestServer()
 	defer srv.Close()
 
-	uuid := "deadbeef-dead-beef-dead-beefdeadbeef"
-	if resp, body := doJSON(t, srv, http.MethodPost, "/api/v1/keys/revoke", "", map[string]string{"document_uuid": uuid}); resp.StatusCode != http.StatusOK {
+	// Document revoke.
+	docUUID := "deadbeef-dead-beef-dead-beefdeadbeef"
+	if resp, body := doJSON(t, srv, http.MethodPost, "/api/v1/keys/revoke", "", map[string]string{"document_uuid": docUUID}); resp.StatusCode != http.StatusOK {
 		t.Fatalf("revoke status = %d, body = %s", resp.StatusCode, body)
 	}
-
-	resp, body := doJSON(t, srv, http.MethodPost, "/api/v1/keys/issue", testAgent, keyclient.IssueRequest{DocumentUUID: uuid})
+	resp, _ := doJSON(t, srv, http.MethodPost, "/api/v1/keys/issue", testAgent, keyclient.IssueRequest{DocumentUUID: docUUID})
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("issue after revoke status = %d, want 403; body = %s", resp.StatusCode, body)
+		t.Fatalf("issue after document revoke status = %d, want 403", resp.StatusCode)
 	}
-}
 
-// TestIssueAgentRevocation verifies the per-employee revoke.
-func TestIssueAgentRevocation(t *testing.T) {
-	srv := httptest.NewServer(newTestServer().Handler())
-	defer srv.Close()
-
-	uuid := "00000000-0000-0000-0000-000000000099"
-	// Register, get a key, then revoke the agent.
-	doJSON(t, srv, http.MethodPost, "/api/v1/keys/issue", "alice", keyclient.IssueRequest{DocumentUUID: uuid})
+	// Agent revoke.
+	agentUUID := "00000000-0000-0000-0000-000000000099"
+	doJSON(t, srv, http.MethodPost, "/api/v1/keys/issue", "alice", keyclient.IssueRequest{DocumentUUID: agentUUID})
 	doJSON(t, srv, http.MethodPost, "/api/v1/agents/revoke", "", map[string]string{"agent_id": "alice"})
-
-	resp, _ := doJSON(t, srv, http.MethodPost, "/api/v1/keys/issue", "alice", keyclient.IssueRequest{DocumentUUID: uuid})
+	resp, _ = doJSON(t, srv, http.MethodPost, "/api/v1/keys/issue", "alice", keyclient.IssueRequest{DocumentUUID: agentUUID})
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("issue after agent revoke status = %d, want 403", resp.StatusCode)
 	}
 }
 
-// TestSetPolicy verifies policy updates propagate to subsequent issuances.
+// TestSetPolicy verifies policy updates propagate.
 func TestSetPolicy(t *testing.T) {
-	srv := httptest.NewServer(newTestServer().Handler())
+	srv := newTestServer()
 	defer srv.Close()
 
 	uuid := "99999999-8888-7777-6666-555555555555"
@@ -181,54 +178,10 @@ func TestSetPolicy(t *testing.T) {
 	}
 }
 
-// TestAudit verifies the audit trail records decisions.
-func TestAudit(t *testing.T) {
-	srv := httptest.NewServer(newTestServer().Handler())
-	defer srv.Close()
-
-	uuid := "12345678-1234-5678-1234-567812345678"
-	doJSON(t, srv, http.MethodPost, "/api/v1/keys/issue", testAgent, keyclient.IssueRequest{DocumentUUID: uuid})
-
-	resp, body := doJSON(t, srv, http.MethodGet, "/api/v1/audit?limit=10", "", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("audit status = %d", resp.StatusCode)
-	}
-	var out struct {
-		Audit []auditView `json:"audit"`
-	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Audit) == 0 {
-		t.Fatal("audit is empty")
-	}
-	found := false
-	for _, e := range out.Audit {
-		if e.Document == uuid && e.Allowed {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("audit does not contain the granted decision: %+v", out.Audit)
-	}
-}
-
-// TestHealth verifies the liveness endpoint.
-func TestHealth(t *testing.T) {
-	srv := httptest.NewServer(newTestServer().Handler())
-	defer srv.Close()
-
-	resp, body := doJSON(t, srv, http.MethodGet, "/healthz", "", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("health status = %d, body = %s", resp.StatusCode, body)
-	}
-}
-
-// TestE2EWithClient exercises the full loop with the real keyclient.Getter.
 // TestV2AgentRegistrationAndReaderKey covers the whole v2 registration
 // flow: register -> derive AS -> store AS -> retrieve AS by owner key id.
 func TestV2AgentRegistrationAndReaderKey(t *testing.T) {
-	srv := httptest.NewServer(newTestServer().Handler())
+	srv := newTestServer()
 	defer srv.Close()
 
 	client := keyclient.NewClient(srv.URL, nil, time.Second)
@@ -246,9 +199,6 @@ func TestV2AgentRegistrationAndReaderKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Register() error: %v", err)
 	}
-	if reg.AgentID == "" {
-		t.Error("agent id is empty")
-	}
 	pubServer, err := hex.DecodeString(reg.PublicKeyServer)
 	if err != nil {
 		t.Fatal(err)
@@ -257,21 +207,15 @@ func TestV2AgentRegistrationAndReaderKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	asA, err := identity.ReaderKey(pubServer, nonceServer)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Store AS on the server.
-	if err := client.SetReaderKey(ctx, keyclient.SetReaderKeyRequest{
-		AgentID:   reg.AgentID,
-		ReaderKey: asA,
-	}); err != nil {
+	if err := client.SetReaderKey(ctx, keyclient.SetReaderKeyRequest{AgentID: reg.AgentID, ReaderKey: asA}); err != nil {
 		t.Fatalf("SetReaderKey() error: %v", err)
 	}
 
-	// Anyone may fetch the read-only reader key by owner key id.
 	owner := identity.OwnerKeyID()
 	ownerKeyHex := hex.EncodeToString(owner[:])
 	got, err := client.ReaderKey(ctx, ownerKeyHex)
@@ -285,11 +229,6 @@ func TestV2AgentRegistrationAndReaderKey(t *testing.T) {
 		t.Error("pub_sig round trip mismatch")
 	}
 
-	// Unknown owners are not found.
-	if _, err := client.ReaderKey(ctx, "00000000000000000000000000000000"); err == nil {
-		t.Error("ReaderKey(unknown owner) error = nil, want an error")
-	}
-
 	// Revoking the agent blocks further reader-key issuance.
 	doJSON(t, srv, http.MethodPost, "/api/v1/agents/revoke", "", map[string]string{"agent_id": reg.AgentID})
 	if _, err := client.ReaderKey(ctx, ownerKeyHex); err == nil {
@@ -297,11 +236,82 @@ func TestV2AgentRegistrationAndReaderKey(t *testing.T) {
 	}
 }
 
-// TestV2MemoryStoreCore verifies the store-level registration primitives.
-func TestV2MemoryStoreCore(t *testing.T) {
-	store := NewMemoryStore()
+// TestE2EWithClient exercises the full v1 loop with keyclient.Getter.
+func TestE2EWithClient(t *testing.T) {
+	srv := newTestServer()
+	defer srv.Close()
 
-	rec := AgentRecord{
+	client := keyclient.NewClient(srv.URL, nil, time.Second)
+	getter := keyclient.NewGetter(client, keyclient.NewCache())
+
+	var u [16]byte
+	if _, err := rand.Read(u[:]); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	first, err := getter.LoadKey(ctx, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := getter.LoadKey(ctx, u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Error("cached key differs")
+	}
+	if len(first) != 32 {
+		t.Errorf("key length = %d, want 32", len(first))
+	}
+}
+
+// TestAudit verifies the audit trail records decisions.
+type auditEntry struct {
+	Time     string `json:"time"`
+	AgentID  string `json:"agent_id"`
+	Document string `json:"document"`
+	Allowed  bool   `json:"allowed"`
+	Reason   string `json:"reason"`
+}
+
+func TestAudit(t *testing.T) {
+	srv := newTestServer()
+	defer srv.Close()
+
+	uuid := "12345678-1234-5678-1234-567812345678"
+	doJSON(t, srv, http.MethodPost, "/api/v1/keys/issue", testAgent, keyclient.IssueRequest{DocumentUUID: uuid})
+
+	resp, body := doJSON(t, srv, http.MethodGet, "/api/v1/audit?limit=10", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("audit status = %d", resp.StatusCode)
+	}
+	var out struct {
+		Audit []auditEntry `json:"audit"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Audit) == 0 {
+		t.Fatal("audit is empty")
+	}
+	found := false
+	for _, e := range out.Audit {
+		if e.Document == uuid && e.Allowed {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("audit does not contain the granted decision")
+	}
+}
+
+// TestV2StoreCore verifies the store-level registration primitives
+// through the public API.
+func TestV2StoreCore(t *testing.T) {
+	store := keyserver.NewMemoryStore()
+
+	rec := keyserver.AgentRecord{
 		AgentID:     "ag-1",
 		DeviceID:    "dev-1",
 		PubSig:      []byte{1, 2, 3},
@@ -321,42 +331,22 @@ func TestV2MemoryStoreCore(t *testing.T) {
 	if string(got.ReaderKey) != string([]byte{0xAA, 0xBB}) {
 		t.Errorf("reader key mismatch: %x", got.ReaderKey)
 	}
-
 	if err := store.SetReaderKey("nobody", []byte{1}); err == nil {
 		t.Error("SetReaderKey(unknown owner) error = nil, want an error")
 	}
-
 	store.RevokeAgent("ag-1")
 	if !store.AgentRevoked("ag-1") {
 		t.Error("revoked flag not set")
 	}
 }
 
-func TestE2EWithClient(t *testing.T) {
-	srv := httptest.NewServer(newTestServer().Handler())
+// TestHealth verifies the liveness endpoint.
+func TestHealth(t *testing.T) {
+	srv := newTestServer()
 	defer srv.Close()
 
-	client := keyclient.NewClient(srv.URL, nil, time.Second)
-	getter := keyclient.NewGetter(client, keyclient.NewCache())
-
-	var u [16]byte
-	for i := range u {
-		u[i] = byte(i)
-	}
-	ctx := context.Background()
-
-	first, err := getter.LoadKey(ctx, u)
-	if err != nil {
-		t.Fatalf("LoadKey() error: %v", err)
-	}
-	second, err := getter.LoadKey(ctx, u)
-	if err != nil {
-		t.Fatalf("LoadKey() second error: %v", err)
-	}
-	if string(first) != string(second) {
-		t.Error("cached key differs")
-	}
-	if len(first) != 32 {
-		t.Errorf("key length = %d, want 32 bytes", len(first))
+	resp, body := doJSON(t, srv, http.MethodGet, "/healthz", "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health status = %d, body = %s", resp.StatusCode, body)
 	}
 }

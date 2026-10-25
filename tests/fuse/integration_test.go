@@ -1,4 +1,6 @@
-package fuse
+// Package fuse_test contains the black-box integration tests for the
+// secure FUSE filesystem (real mount over /dev/fuse).
+package fuse_test
 
 import (
 	"bytes"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/clavis/clavis/internal/crypto"
+	"github.com/clavis/clavis/internal/fuse"
 	"github.com/clavis/clavis/internal/interceptor"
 )
 
@@ -48,7 +51,7 @@ func TestIntegrationMount(t *testing.T) {
 		Whitelist: []string{ownName},
 	}, nil)
 
-	server, err := Mount(MountConfig{
+	server, err := fuse.Mount(fuse.MountConfig{
 		SourceDir:   source,
 		MountPoint:  mount,
 		KeyGetter:   crypto.NewFileKeyGetter(keyPath),
@@ -58,7 +61,7 @@ func TestIntegrationMount(t *testing.T) {
 		t.Skipf("cannot mount FUSE (skipped): %v", err)
 	}
 	defer func() {
-		if err := Unmount(server); err != nil {
+		if err := fuse.Unmount(server); err != nil {
 			t.Errorf("Unmount() error: %v", err)
 		}
 	}()
@@ -91,8 +94,8 @@ func TestIntegrationMount(t *testing.T) {
 	if bytes.Contains(phys, payload) {
 		t.Error("plaintext found on disk")
 	}
-	if len(phys) != HeaderSize+len(payload) {
-		t.Errorf("physical size = %d, want %d", len(phys), HeaderSize+len(payload))
+	if len(phys) != fuse.HeaderSize+len(payload) {
+		t.Errorf("physical size = %d, want %d", len(phys), fuse.HeaderSize+len(payload))
 	}
 
 	// The visible size must exclude the header.

@@ -1,18 +1,21 @@
-package e2e
+// Package e2e_test contains black-box integration tests for the direct
+// (end-to-end) key exchange over the relay.
+package e2e_test
 
 import (
 	"bytes"
 	"io"
-	"net"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/clavis/clavis/internal/e2e"
 )
 
 // startRelay starts a RelayServer on a random port and serves it.
-func startRelay(t *testing.T) *RelayServer {
+func startRelay(t *testing.T) *e2e.RelayServer {
 	t.Helper()
-	srv, err := NewRelayServer("127.0.0.1:0")
+	srv, err := e2e.NewRelayServer("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,12 +32,12 @@ func TestRelayPair(t *testing.T) {
 	srv := startRelay(t)
 
 	deadline := time.Now().Add(5 * time.Second)
-	ownerConn, err := Dial(srv.Addr(), "sess-1", RoleOwner, "ag-owner")
+	ownerConn, err := e2e.Dial(srv.Addr(), "sess-1", e2e.RoleOwner, "ag-owner")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ownerConn.Close() })
-	peerConn, err := Dial(srv.Addr(), "sess-1", RolePeer, "ag-peer")
+	peerConn, err := e2e.Dial(srv.Addr(), "sess-1", e2e.RolePeer, "ag-peer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +77,8 @@ func TestRelayPair(t *testing.T) {
 }
 
 // TestKeyShareOverRelay verifies the full e2e exchange: the owner sends
-// AS and its public key directly to the peer through the relay; both end
-// points derive the same session key and the relay never sees the plain.
+// AS and its public key directly to the peer through the relay; the relay
+// never sees the plain material.
 func TestKeyShareOverRelay(t *testing.T) {
 	srv := startRelay(t)
 
@@ -84,38 +87,38 @@ func TestKeyShareOverRelay(t *testing.T) {
 
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
-
 	wg.Add(2)
+
 	go func() {
 		defer wg.Done()
-		conn, err := Dial(srv.Addr(), "sess-ks", RoleOwner, "ag-owner")
+		conn, err := e2e.Dial(srv.Addr(), "sess-ks", e2e.RoleOwner, "ag-owner")
 		if err != nil {
 			errs <- err
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		errs <- OwnerShare(conn, as, ownerPub)
+		errs <- e2e.OwnerShare(conn, as, ownerPub)
 	}()
 
 	go func() {
 		defer wg.Done()
-		conn, err := Dial(srv.Addr(), "sess-ks", RolePeer, "ag-peer")
+		conn, err := e2e.Dial(srv.Addr(), "sess-ks", e2e.RolePeer, "ag-peer")
 		if err != nil {
 			errs <- err
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		gotAS, gotPub, err := PeerReceive(conn)
+		gotAS, gotPub, err := e2e.PeerReceive(conn)
 		if err != nil {
 			errs <- err
 			return
 		}
 		if !bytes.Equal(gotAS, as) {
-			errs <- &testErr{"AS mismatch"}
+			errs <- &keyShareErr{"AS mismatch"}
 			return
 		}
 		if !bytes.Equal(gotPub, ownerPub) {
-			errs <- &testErr{"owner pub mismatch"}
+			errs <- &keyShareErr{"owner pub mismatch"}
 			return
 		}
 		errs <- nil
@@ -130,44 +133,23 @@ func TestKeyShareOverRelay(t *testing.T) {
 	}
 }
 
-type testErr struct{ msg string }
+type keyShareErr struct{ msg string }
 
-func (e *testErr) Error() string { return e.msg }
-
-// TestFrameRoundTrip verifies the length-prefixed framing helpers.
-func TestFrameRoundTrip(t *testing.T) {
-	client, server := net.Pipe()
-	defer func() { _ = client.Close() }()
-	defer func() { _ = server.Close() }()
-
-	go func() {
-		_, _ = writeFrame(server, []byte("payload-123"))
-		_ = server.Close()
-	}()
-
-	got, err := readFrame(client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "payload-123" {
-		t.Errorf("frame payload = %q", got)
-	}
-}
+func (e *keyShareErr) Error() string { return e.msg }
 
 // TestRelayWaiterTimeout verifies the waiting slot auto-expires.
 func TestRelayWaiterTimeout(t *testing.T) {
 	srv := startRelay(t)
-	conn, err := Dial(srv.Addr(), "sess-lone", RoleOwner, "ag-lone")
+	conn, err := e2e.Dial(srv.Addr(), "sess-lone", e2e.RoleOwner, "ag-lone")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close() }()
 
-	deadline := time.Now().Add(2 * time.Second)
-	buf := make([]byte, 1)
-	if err := conn.SetReadDeadline(deadline); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	buf := make([]byte, 1)
 	if _, err := io.ReadFull(conn, buf); err == nil {
 		t.Fatal("expected timeout, got data")
 	}
