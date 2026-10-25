@@ -22,6 +22,7 @@ clavis/
 │   ├── interceptor/        # access policy: firejail/root/whitelist + audit
 │   ├── keyclient/          # Key Server client: mTLS, policies, TTL cache
 │   ├── logging/            # slog + rotation (lumberjack)
+│   ├── sandbox/            # Firejail sandbox (net/print/sound lockdown)
 │   ├── subject/            # calling process identity from /proc
 │   └── version/            # build version (ldflags)
 ├── scripts/                # helper scripts
@@ -56,6 +57,9 @@ golangci-lint run   # requires golangci-lint v2 (go install github.com/golangci/
 
 # run the agent with the sample settings
 go run ./agent -config settings.yaml
+
+# run an application inside the Firejail sandbox (double security perimeter)
+go run ./agent open gedit /home/alex/Clavis/report.txt
 ```
 
 ## Configuration

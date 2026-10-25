@@ -22,6 +22,11 @@ func main() {
 }
 
 func run() int {
+	// Subcommand: launch an application inside the Firejail sandbox.
+	if len(os.Args) >= 2 && os.Args[1] == "open" {
+		return runOpen(os.Args[2:])
+	}
+
 	fs := flag.NewFlagSet("clavis", flag.ContinueOnError)
 	configPath := fs.String("config", "settings.yaml", "path to settings YAML file")
 	showVersion := fs.Bool("version", false, "print version and exit")
