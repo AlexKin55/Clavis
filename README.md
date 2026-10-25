@@ -68,6 +68,35 @@ go run ./agent open gedit /home/alex/Clavis/report.txt
 go run ./server -config server.yaml
 ```
 
+## Benchmarks
+
+```bash
+go test ./internal/crypto/ -bench=. -benchtime=1x
+go test ./internal/fuse/ -bench=. -benchtime=1x
+```
+
+## Deployment
+
+Root rights are needed once per workstation. [`deploy/install.sh`](deploy/install.sh)
+builds the binaries, creates the `clavis` system user, prepares the
+directories (encrypted store, mount point, token blobs, logs), generates
+(or imports, via `--key-file`) the 32-byte key and installs the systemd
+units.
+
+```bash
+sudo ./deploy/install.sh                   # agent only
+sudo ./deploy/install.sh --with-keyserver  # agent + Key Server
+```
+
+Systemd units: [`clavis-agent.service`](deploy/systemd/clavis-agent.service)
+(mounts the secure FUSE filesystem as the unprivileged `clavis` user) and
+[`clavis-keyserver.service`](deploy/systemd/clavis-keyserver.service).
+Configuration lives in `/etc/clavis/settings.yaml` and
+`/etc/clavis/server.yaml`.
+
+A new workstation = install the package + point `fuse.directory` at the
+protected folder.
+
 ## Configuration
 
 Settings are provided in a YAML file (default `settings.yaml`), see the
