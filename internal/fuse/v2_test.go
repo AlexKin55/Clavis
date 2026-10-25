@@ -397,3 +397,78 @@ func TestV2UnknownOwner(t *testing.T) {
 		t.Fatal("openProtectedFile(unknown owner) error = nil, want an error")
 	}
 }
+
+// TestV2MixedKeyAvailability verifies the offline-style scenario where
+// only some documents have reader keys (e.g. the local cache is partially
+// filled): documents with a key open, documents without one fail, and the
+// failure of one document does not affect the others.
+func TestV2MixedKeyAvailability(t *testing.T) {
+	ownerA, serverPub, serverNonce := v2Fixture(t)
+	ownerB, _, _ := v2Fixture(t)
+
+	sourceDir := t.TempDir()
+
+	writeDoc := func(root *SecureRoot, name string, payload []byte) string {
+		t.Helper()
+		path := filepath.Join(sourceDir, name)
+		f, err := root.createProtectedFile(context.Background(), path, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, e := f.Write(context.Background(), payload, 0); e != 0 {
+			t.Fatal(e)
+		}
+		if e := f.Release(context.Background()); e != 0 {
+			t.Fatal(e)
+		}
+		return path
+	}
+	mkRoot := func(owner *crypto.AgentIdentity) *SecureRoot {
+		return NewSecureRoot(&Config{
+			SourceDir:   sourceDir,
+			KeyGetter:   crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),
+			Identity:    owner,
+			ServerPub:   serverPub,
+			ServerNonce: serverNonce,
+		})
+	}
+
+	payloadA := []byte("document A")
+	pathA := writeDoc(mkRoot(ownerA), "a.txt", payloadA)
+	_ = writeDoc(mkRoot(ownerB), "b.txt", []byte("document B"))
+
+	// Offline: only A's reader key is known (e.g. cached locally).
+	asA, _ := ownerA.UnifiedReaderKey()
+	readerRoot := NewSecureRoot(&Config{
+		SourceDir:  sourceDir,
+		KeyGetter:  crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),
+		ReaderKeys: staticReaderProvider{ownerA.OwnerKeyID(): {as: asA, pub: ownerA.PublicSignatureKey()}},
+	})
+
+	readDoc := func(path string, want []byte) {
+		t.Helper()
+		rf, err := readerRoot.openProtectedFile(context.Background(), path, os.O_RDONLY)
+		if err != nil {
+			t.Fatalf("open %q: %v", path, err)
+		}
+		defer func() { _ = rf.Release(context.Background()) }()
+		buf := make([]byte, len(want))
+		if _, e := rf.Read(context.Background(), buf, 0); e != 0 {
+			t.Fatalf("read %q: errno %v", path, e)
+		}
+		if !bytes.Equal(buf, want) {
+			t.Fatalf("content of %q = %q, want %q", path, buf, want)
+		}
+	}
+
+	// A opens because its key is available.
+	readDoc(pathA, payloadA)
+
+	// B fails: its reader key is missing. The error must be isolated.
+	if _, err := readerRoot.openProtectedFile(context.Background(), filepath.Join(sourceDir, "b.txt"), os.O_RDONLY); err == nil {
+		t.Fatal("open b.txt (missing reader key) error = nil, want an error")
+	}
+
+	// A keeps working after B's failed attempt.
+	readDoc(pathA, payloadA)
+}
