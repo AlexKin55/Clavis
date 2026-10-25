@@ -53,70 +53,62 @@ func pendingAgentServer(t *testing.T, sessions []agentapi.PendingE2ESession) (*h
 	return srv, &approved
 }
 
-// =========================================================================
-// Case 1: an end-to-end key request — "give the key or not". The pending
-// request is emulated by the agent API; the decision dialog is shown and
-// the user either grants the key (approve endpoint called) or refuses.
-// =========================================================================
+// Case 1 — "предоставить ключ или нет": an end-to-end key request is
+// emulated through the agent API, the approval dialog is shown and the
+// user either grants the key (approve endpoint called) or refuses it.
+func TestCaseOneKeyRequestGrantOrRefuse(t *testing.T) {
+	// Grant branch.
+	t.Run("grant", func(t *testing.T) {
+		srv, approved := pendingAgentServer(t, []agentapi.PendingE2ESession{
+			{SessionID: "e2e-abc", PeerAgent: "agent-peer1"},
+		})
+		ui := &fakeUI{}
 
-// TestCheckPendingRequestsShowsDialog verifies that a pending e2e request
-// shows the approval dialog with the peer identity, and that granting it
-// calls the approve endpoint (the key is handed over).
-func TestCheckPendingRequestsShowsDialog(t *testing.T) {
-	srv, approved := pendingAgentServer(t, []agentapi.PendingE2ESession{
-		{SessionID: "e2e-abc", PeerAgent: "agent-peer1"},
+		n, err := CheckPendingRequests(agentapi.NewClient(srv.URL), ui)
+		if err != nil {
+			t.Fatalf("CheckPendingRequests() error: %v", err)
+		}
+		if n != 1 {
+			t.Errorf("pending count = %d, want 1", n)
+		}
+		// The dialog must be shown with the peer identity.
+		if ui.confirmCalls != 1 || ui.confirmPeer != "agent-peer1" {
+			t.Fatalf("dialog calls = %d peer = %q, want 1 / agent-peer1", ui.confirmCalls, ui.confirmPeer)
+		}
+
+		// The user grants the key.
+		ui.decide(true)
+		if len(*approved) != 1 || (*approved)[0] != "e2e-abc" {
+			t.Errorf("approved sessions = %v, want [e2e-abc]", *approved)
+		}
+		if len(ui.infos) == 0 || ui.infos[len(ui.infos)-1] != "Ключ доступа передан." {
+			t.Errorf("infos = %v, want a success message", ui.infos)
+		}
 	})
-	ui := &fakeUI{}
-	api := agentapi.NewClient(srv.URL)
 
-	n, err := CheckPendingRequests(api, ui)
-	if err != nil {
-		t.Fatalf("CheckPendingRequests() error: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("pending count = %d, want 1", n)
-	}
-	// The approval dialog must have been presented with the peer's id.
-	if ui.confirmCalls != 1 {
-		t.Fatalf("ConfirmApproval calls = %d, want 1 (dialog shown)", ui.confirmCalls)
-	}
-	if ui.confirmPeer != "agent-peer1" {
-		t.Errorf("dialog peer = %q, want agent-peer1", ui.confirmPeer)
-	}
+	// Refuse branch: no approve call, user is informed.
+	t.Run("refuse", func(t *testing.T) {
+		srv, approved := pendingAgentServer(t, []agentapi.PendingE2ESession{
+			{SessionID: "e2e-xyz", PeerAgent: "agent-peer2"},
+		})
+		ui := &fakeUI{}
 
-	// The user grants the key.
-	ui.decide(true)
-	if len(*approved) != 1 || (*approved)[0] != "e2e-abc" {
-		t.Errorf("approved sessions = %v, want [e2e-abc]", *approved)
-	}
-	if len(ui.infos) == 0 || ui.infos[len(ui.infos)-1] != "Ключ доступа передан." {
-		t.Errorf("infos = %v, want a success message", ui.infos)
-	}
-}
+		if _, err := CheckPendingRequests(agentapi.NewClient(srv.URL), ui); err != nil {
+			t.Fatal(err)
+		}
+		if ui.confirmCalls != 1 {
+			t.Fatalf("dialog calls = %d, want 1", ui.confirmCalls)
+		}
 
-// TestCheckPendingRequestsRefuse verifies the "no" branch of the key
-// request case: refusing the dialog does not call the approve endpoint.
-func TestCheckPendingRequestsRefuse(t *testing.T) {
-	srv, approved := pendingAgentServer(t, []agentapi.PendingE2ESession{
-		{SessionID: "e2e-xyz", PeerAgent: "agent-peer2"},
+		ui.decide(false)
+		if len(*approved) != 0 {
+			t.Errorf("approved sessions = %v, want none", *approved)
+		}
+		last := ui.infos[len(ui.infos)-1]
+		if !strings.Contains(last, "отклонён") {
+			t.Errorf("info = %q, want a declined message", last)
+		}
 	})
-	ui := &fakeUI{}
-
-	if _, err := CheckPendingRequests(agentapi.NewClient(srv.URL), ui); err != nil {
-		t.Fatal(err)
-	}
-	if ui.confirmCalls != 1 {
-		t.Fatalf("dialog calls = %d, want 1", ui.confirmCalls)
-	}
-
-	ui.decide(false)
-	if len(*approved) != 0 {
-		t.Errorf("approved sessions = %v, want none", *approved)
-	}
-	last := ui.infos[len(ui.infos)-1]
-	if !strings.Contains(last, "отклонён") {
-		t.Errorf("info = %q, want a declined message", last)
-	}
 }
 
 // TestCheckPendingRequestsNone verifies the no-pending case: no dialog,
@@ -161,13 +153,6 @@ func TestCheckPendingRequestsUnreachable(t *testing.T) {
 	}
 }
 
-// --- Case 2: unlock failure notification ---
-//
-// A notification that no key could be found to decrypt a document
-// ("возможно агент оффлайн") or that the key servers are unreachable is
-// presented to the user. The agent's /api/notifications is emulated with
-// an httptest server; the presenter records what would be shown.
-
 // fakeNotifier records displayed notifications instead of rendering them.
 type fakeNotifier struct {
 	titles   []string
@@ -192,17 +177,17 @@ func notificationAgentServer(t *testing.T, notes []agentapi.Notification) *httpt
 	return srv
 }
 
-// TestFetchNewNotificationsNoKeyOffline verifies that "no key found" and
-// "offline" notifications from the agent are presented with the right
-// titles, reported once (id deduplication) and skipped when already seen.
-func TestFetchNewNotificationsNoKeyOffline(t *testing.T) {
+// Case 2 — "не удалось найти ключ для расшифрования, возможно агент
+// оффлайн": the agent reports unlock failures via /api/notifications and
+// the GUI presents them with the right titles, once per notification.
+func TestCaseTwoNoKeyOfflineNotification(t *testing.T) {
 	srv := notificationAgentServer(t, []agentapi.Notification{
 		{ID: 1, Kind: "offline", Text: `Не удалось открыть "letter.txt": keyclient: all 1 servers failed to issue reader key: connection refused`},
 		{ID: 2, Kind: "key_missing", Text: `Не удалось открыть "report.docx": fuse: reader key for owner not found`},
 	})
 	presenter := &fakeNotifier{}
 
-	// First poll: both notifications are new.
+	// First poll: both notifications are new and presented.
 	lastID, shown, err := FetchNewNotifications(agentapi.NewClient(srv.URL), presenter, 0)
 	if err != nil {
 		t.Fatalf("FetchNewNotifications() error: %v", err)
@@ -241,9 +226,9 @@ func TestFetchNewNotificationsNoKeyOffline(t *testing.T) {
 	}
 }
 
-// TestFetchNewNotificationsGenericTitle verifies the fallback title for
-// unknown kinds and the empty-no-notifications case.
-func TestFetchNewNotificationsGenericTitle(t *testing.T) {
+// TestNotificationGenericTitle verifies the fallback title for unknown
+// kinds.
+func TestNotificationGenericTitle(t *testing.T) {
 	srv := notificationAgentServer(t, []agentapi.Notification{
 		{ID: 7, Kind: "info", Text: "просто информация"},
 	})
