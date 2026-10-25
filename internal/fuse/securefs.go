@@ -44,6 +44,10 @@ type Config struct {
 	ModeProvider func() crypto.Mode
 	// ReaderKeys resolves the owner's read-only key material for v2 reads.
 	ReaderKeys ReaderKeyProvider
+	// Notifier, when set, receives user-facing events (e.g. a document
+	// could not be opened because its key is missing or the key servers
+	// are unreachable).
+	Notifier Notifier
 }
 
 // SecureRoot holds the shared configuration of the filesystem.

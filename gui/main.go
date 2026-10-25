@@ -30,6 +30,7 @@ import (
 
 	"github.com/clavis/clavis/internal/crypto"
 	"github.com/clavis/clavis/internal/mode"
+	"github.com/clavis/clavis/internal/notify"
 )
 
 func main() {
@@ -65,6 +66,12 @@ func main() {
 	)
 	w.SetContent(content)
 	w.Resize(fyne.NewSize(460, 220))
+
+	// Poll the agent's localhost API for notifications (e.g. a document
+	// could not be opened because its key is missing or the key servers
+	// are unreachable) and surface them as system notifications.
+	go pollNotifications(a, *uiAddr)
+
 	w.ShowAndRun()
 }
 
@@ -151,4 +158,69 @@ func approve(w fyne.Window, base, sessionID string) {
 type pending struct {
 	SessionID string `json:"session_id"`
 	PeerAgent string `json:"peer_agent_id"`
+}
+
+type notification struct {
+	ID   int64       `json:"id"`
+	Kind notify.Kind `json:"kind"`
+	Text string      `json:"text"`
+	Time int64       `json:"time"`
+}
+
+// pollNotifications fetches new notifications from the agent every few
+// seconds and shows each of them as a system notification. The last seen
+// id prevents duplicates.
+func pollNotifications(a fyne.App, base string) {
+	const pollInterval = 3 * time.Second
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	var lastID int64
+	for range ticker.C {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/notifications", nil)
+		if err != nil {
+			cancel()
+			continue
+		}
+		resp, err := http.DefaultClient.Do(req)
+		cancel()
+		if err != nil {
+			continue // agent is not running (yet) — retry on the next tick
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			continue
+		}
+
+		var out struct {
+			Notifications []notification `json:"notifications"`
+		}
+		if json.Unmarshal(body, &out) != nil {
+			continue
+		}
+		for _, n := range out.Notifications {
+			if n.ID <= lastID {
+				continue
+			}
+			lastID = n.ID
+			a.SendNotification(&fyne.Notification{
+				Title:   notificationTitle(n.Kind),
+				Content: n.Text,
+			})
+		}
+	}
+}
+
+// notificationTitle picks a concise title for the notification kind.
+func notificationTitle(k notify.Kind) string {
+	switch k {
+	case notify.KindOffline:
+		return "Clavis: нет доступа к серверам ключей"
+	case notify.KindKeyMissing:
+		return "Clavis: не найден ключ для документа"
+	default:
+		return "Clavis"
+	}
 }

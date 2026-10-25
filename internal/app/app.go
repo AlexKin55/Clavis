@@ -27,6 +27,7 @@ import (
 	"github.com/clavis/clavis/internal/keyclient"
 	"github.com/clavis/clavis/internal/logging"
 	"github.com/clavis/clavis/internal/mode"
+	"github.com/clavis/clavis/internal/notify"
 	"github.com/clavis/clavis/internal/token"
 	"github.com/clavis/clavis/internal/version"
 )
@@ -173,8 +174,14 @@ func Run(ctx context.Context, cfgPath string) error {
 	modeMgr, _ := mode.Open("")
 	modeProvider := func() crypto.Mode { return modeMgr.Get() }
 
+	// Notification bus for the desktop GUI: filesystem events (a document
+	// could not be opened because its key is missing or the key servers are
+	// unreachable) are served through the localhost UI API.
+	notices := notify.NewBus(50)
+
 	if cfg.Agent.UIListen != "" && identity != nil && multi != nil {
 		ui := NewUIServer(cfg.Agent.UIListen, modeMgr, multi, relays, identity, effectiveAgentID, logger)
+		ui.SetNoticeBus(notices)
 		if err := ui.Start(); err != nil {
 			logger.Warn("ui server disabled", "error", err)
 		} else {
@@ -201,6 +208,7 @@ func Run(ctx context.Context, cfgPath string) error {
 		DefaultMode:  crypto.ModeProxy,
 		ModeProvider: modeProvider,
 		ReaderKeys:   readerKeys,
+		Notifier:     keyFailureNotifier{bus: notices},
 	})
 	if err != nil {
 		return err

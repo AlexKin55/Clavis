@@ -39,6 +39,8 @@ type MountConfig struct {
 	ModeProvider func() crypto.Mode
 	// ReaderKeys resolves the owner's reader key for v2 documents.
 	ReaderKeys ReaderKeyProvider
+	// Notifier, when set, receives user-facing filesystem events.
+	Notifier Notifier
 }
 
 // Mount mounts the secure filesystem and starts serving requests.
@@ -63,6 +65,7 @@ func Mount(cfg MountConfig) (*fuse.Server, error) {
 		ServerNonce: cfg.ServerNonce,
 		DefaultMode: cfg.DefaultMode,
 		ReaderKeys:  cfg.ReaderKeys,
+		Notifier:    cfg.Notifier,
 	})
 
 	server, err := fs.Mount(cfg.MountPoint, root.rootNode(), &fs.Options{MountOptions: mountOpts})

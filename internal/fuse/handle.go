@@ -447,7 +447,7 @@ func (r *SecureRoot) openProtectedFile(ctx context.Context, path string, flags i
 	return r.openProtectedFileV1(ctx, osf, path)
 }
 
-func (r *SecureRoot) openProtectedFileV1(ctx context.Context, osf *os.File, _ string) (*secureFile, error) {
+func (r *SecureRoot) openProtectedFileV1(ctx context.Context, osf *os.File, path string) (*secureFile, error) {
 	headerBytes := make([]byte, crypto.HeaderSize)
 	if _, err := io.ReadFull(osf, headerBytes); err != nil {
 		return nil, fmt.Errorf("read v1 header: %w", err)
@@ -456,10 +456,14 @@ func (r *SecureRoot) openProtectedFileV1(ctx context.Context, osf *os.File, _ st
 	if err != nil {
 		return nil, err
 	}
-	return newFileHandleV1(ctx, r, osf, header)
+	file, err := newFileHandleV1(ctx, r, osf, header)
+	if err != nil {
+		r.notifyOpenFailure(path, err)
+	}
+	return file, err
 }
 
-func (r *SecureRoot) openProtectedFileV2(ctx context.Context, osf *os.File, _ string) (*secureFile, error) {
+func (r *SecureRoot) openProtectedFileV2(ctx context.Context, osf *os.File, path string) (*secureFile, error) {
 	headerBytes := make([]byte, crypto.HeaderV2Size)
 	if _, err := io.ReadFull(osf, headerBytes); err != nil {
 		return nil, fmt.Errorf("read v2 header: %w", err)
@@ -473,11 +477,14 @@ func (r *SecureRoot) openProtectedFileV2(ctx context.Context, osf *os.File, _ st
 	}
 	readKey, ownerPub, err := r.cfg.ReaderKeys.ReaderKey(ctx, header.OwnerKeyID, header.Mode)
 	if err != nil {
+		r.notifyOpenFailure(path, err)
 		return nil, err
 	}
 	dk, err := crypto.UnwrapKey(readKey, header.WrappedDK[:])
 	if err != nil {
-		return nil, fmt.Errorf("fuse: unwrap document key: %w", err)
+		err = fmt.Errorf("fuse: unwrap document key: %w", err)
+		r.notifyOpenFailure(path, err)
+		return nil, err
 	}
 	cryptor, err := crypto.NewAesCtr(dk, header.Nonce)
 	if err != nil {
@@ -523,6 +530,13 @@ func newFileHandleV1(ctx context.Context, r *SecureRoot, osf *os.File, header *c
 		headerSize:   crypto.HeaderSize,
 		cryptor:      cryptor,
 	}, nil
+}
+
+// notifyOpenFailure forwards key-related open failures to the Notifier.
+func (r *SecureRoot) notifyOpenFailure(path string, err error) {
+	if n := r.cfg.Notifier; n != nil {
+		n.OpenFailed(path, err)
+	}
 }
 
 // errno converts a Go error into a FUSE errno.

@@ -22,6 +22,7 @@ clavis/
 │   ├── sandbox/      # Firejail profiles and runner
 │   ├── token/        # PKCS#11 hardware token (wrapped document keys)
 │   ├── config/       # YAML settings
+│   ├── notify/       # in-memory notification bus for the desktop GUI
 │   └── logging/      # slog + rotation
 ├── tests/            # integration/e2e (mirrored layout)
 └── deploy/           # systemd units, installer, SQL schema
@@ -59,6 +60,23 @@ document UUID is preserved.
 - `PUT  /api/v1/documents/{uuid}/policy`
 - `POST /api/v1/e2e/sessions` — rendezvous for direct exchange
 - `GET  /api/v1/audit`, `GET /api/v1/documents`, `GET /healthz`
+
+## Desktop UI and notifications
+
+The agent exposes a localhost HTTP API (`agent.ui_listen`, default
+`127.0.0.1:8902`) consumed by the Fyne control panel (`gui/`, build tag
+`gui`):
+
+- `GET/POST /api/mode` — per-file sharing mode for new documents
+- `GET /api/e2e/pending`, `POST /api/e2e/approve` — end-to-end access approval
+- `GET /api/notifications` — recent GUI notifications
+
+When opening a document fails because of key material problems (owner has
+no key, a returned key is unusable, or the key servers are unreachable),
+`fuse.Notifier` forwards the failure to
+`notify.Bus`; the GUI polls `/api/notifications` and surfaces new events as
+system notifications (identifying "no key for the document" vs "no access
+to the key servers / offline").
 
 ## Deployment
 

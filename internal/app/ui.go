@@ -15,6 +15,7 @@ import (
 	"github.com/clavis/clavis/internal/keyclient"
 	"github.com/clavis/clavis/internal/logging"
 	"github.com/clavis/clavis/internal/mode"
+	"github.com/clavis/clavis/internal/notify"
 )
 
 // UIServer is the agent's localhost API consumed by the desktop GUI
@@ -28,6 +29,7 @@ type UIServer struct {
 	relays   []string
 	identity *crypto.AgentIdentity
 	agentID  string
+	bus      *notify.Bus
 	logger   *logging.Logger
 	server   *http.Server
 }
@@ -45,11 +47,15 @@ func NewUIServer(listen string, mgr *mode.Manager, multi *keyclient.MultiClient,
 	}
 }
 
+// SetNoticeBus wires the notification bus served by /api/notifications.
+func (s *UIServer) SetNoticeBus(bus *notify.Bus) { s.bus = bus }
+
 // Start binds the listener and serves the API.
 func (s *UIServer) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/mode", s.handleGetMode)
 	mux.HandleFunc("POST /api/mode", s.handleSetMode)
+	mux.HandleFunc("GET /api/notifications", s.handleNotifications)
 	mux.HandleFunc("GET /api/e2e/pending", s.handlePending)
 	mux.HandleFunc("POST /api/e2e/approve", s.handleApprove)
 
@@ -103,6 +109,16 @@ func (s *UIServer) handleSetMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeUIJSON(w, http.StatusOK, map[string]bool{"updated": true})
+}
+
+// handleNotifications returns the most recent GUI notifications (e.g. a
+// document could not be opened: no key, or the key servers are offline).
+func (s *UIServer) handleNotifications(w http.ResponseWriter, _ *http.Request) {
+	if s.bus == nil {
+		writeUIJSON(w, http.StatusOK, map[string]any{"notifications": []notify.Notice{}})
+		return
+	}
+	writeUIJSON(w, http.StatusOK, map[string]any{"notifications": s.bus.Recent()})
 }
 
 func (s *UIServer) handlePending(w http.ResponseWriter, _ *http.Request) {

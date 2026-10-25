@@ -472,3 +472,72 @@ func TestV2MixedKeyAvailability(t *testing.T) {
 	// A keeps working after B's failed attempt.
 	readDoc(pathA, payloadA)
 }
+
+// recordingNotifier collects opened-failed events for assertions.
+type recordingNotifier struct {
+	paths []string
+	errs  []error
+}
+
+func (n *recordingNotifier) OpenFailed(path string, err error) {
+	n.paths = append(n.paths, path)
+	n.errs = append(n.errs, err)
+}
+
+// TestV2NotifierReportsKeyFailure verifies that the configured Notifier is
+// called when a document cannot be opened due to key material problems,
+// and that successful opens do not trigger it.
+func TestV2NotifierReportsKeyFailure(t *testing.T) {
+	owner, serverPub, serverNonce := v2Fixture(t)
+	sourceDir := t.TempDir()
+	createRoot := NewSecureRoot(&Config{
+		SourceDir:   sourceDir,
+		KeyGetter:   crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),
+		Identity:    owner,
+		ServerPub:   serverPub,
+		ServerNonce: serverNonce,
+	})
+	path := filepath.Join(sourceDir, "doc.txt")
+	f, err := createRoot.createProtectedFile(context.Background(), path, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, e := f.Write(context.Background(), []byte("secret"), 0); e != 0 {
+		t.Fatal(e)
+	}
+	if e := f.Release(context.Background()); e != 0 {
+		t.Fatal(e)
+	}
+
+	notifier := &recordingNotifier{}
+	// The owner is unknown to the (empty) reader key provider: open fails.
+	readerRoot := NewSecureRoot(&Config{
+		SourceDir:  sourceDir,
+		KeyGetter:  crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),
+		ReaderKeys: staticReaderProvider{},
+		Notifier:   notifier,
+	})
+	if _, err := readerRoot.openProtectedFile(context.Background(), path, os.O_RDONLY); err == nil {
+		t.Fatal("openProtectedFile() error = nil, want an error")
+	}
+	if len(notifier.paths) != 1 || notifier.paths[0] != path {
+		t.Fatalf("notifier paths = %v, want [%q]", notifier.paths, path)
+	}
+
+	// Success with a known key must not notify.
+	as, _ := owner.UnifiedReaderKey()
+	okRoot := NewSecureRoot(&Config{
+		SourceDir:  sourceDir,
+		KeyGetter:  crypto.NewFileKeyGetter(filepath.Join(t.TempDir(), "unused.key")),
+		ReaderKeys: staticReaderProvider{owner.OwnerKeyID(): {as: as, pub: owner.PublicSignatureKey()}},
+		Notifier:   notifier,
+	})
+	rf, err := okRoot.openProtectedFile(context.Background(), path, os.O_RDONLY)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = rf.Release(context.Background())
+	if len(notifier.paths) != 1 {
+		t.Fatalf("notifier paths = %v, want the single failure only", notifier.paths)
+	}
+}
